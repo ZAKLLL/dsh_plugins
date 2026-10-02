@@ -107,14 +107,23 @@ for (const id of ["dsh", "claude", "codex", "gemini", "pi", "opencode"]) {
   adapters[id] = (await import(`../sources/${id}.js`)).default;
 }
 for (const card of list.body.sessions) {
-  const target = adapters[card.agent]?.desktopOpen?.(card) ?? null;
-  if (target === null) continue;
-  assert.match(target.url, /^[a-z][a-z0-9+.-]*:\/\//, `a desktop target must be a URL: ${target.url}`);
-  assert.ok(
-    target.url.includes(card.sessionId),
-    `a desktop link must carry the session it is for: ${target.url}`,
+  const plan = adapters[card.agent]?.openPlan?.(card);
+  if (plan === undefined) continue;
+  assert.ok(Array.isArray(plan) && plan.length > 0, "a declared open plan must not be empty");
+  for (const step of plan) {
+    assert.ok(["app", "terminal"].includes(step.kind), `unknown open step: ${JSON.stringify(step)}`);
+    if (step.kind !== "app") continue;
+    assert.match(step.url, /^[a-z][a-z0-9+.-]*:\/\//, `an app step must be a URL: ${step.url}`);
+    assert.ok(step.url.includes(card.sessionId), `an app link must carry its session: ${step.url}`);
+    assert.equal(typeof step.label, "string", "and name the app it opens");
+  }
+  // The last step has to be one every machine can honour. A plan ending in an
+  // app step would make the session unopenable wherever that app is absent.
+  assert.equal(
+    plan[plan.length - 1].kind,
+    "terminal",
+    `${card.agent}: a plan must end in a terminal step, or the session cannot be opened without the app`,
   );
-  assert.equal(typeof target.label, "string", "and name the app it opens");
 }
 
 const cardKeys = new Set(list.body.sessions.map((session) => session.key));

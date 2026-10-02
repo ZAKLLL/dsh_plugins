@@ -1302,27 +1302,17 @@ async function launchInTerminal(cwd, command, title) {
 }
 
 /** The command that starts a fresh interactive session for each agent. */
-async function openOriginal(value) {
-  const { card } = value;
-  if (adapterOf(card.agent)?.clientOwned === true) {
-    return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
-  }
-
-  // Ask the session's own desktop app first, when its dialect has one. A URL
-  // nothing handles is the expected case on a machine without that app, so the
-  // failure here is silent and the terminal resume below is the fallback. This
-  // deliberately never runs an installer: opening a session must not start a
-  // download.
-  const desktop = adapterOf(card.agent)?.desktopOpen?.(card) ?? null;
-  if (desktop !== null) {
-    try {
-      await execFileAsync("open", [desktop.url], { timeout: 10000, maxBuffer: 1024 * 1024 });
-      return { kind: "desktop", sessionId: card.sessionId, command: `open ${desktop.url}`, terminal: desktop.label };
-    } catch {
-      /* Nothing handles the scheme: carry on to the terminal. */
-    }
-  }
-
+/**
+ * Wake a session in a terminal: focus it when it is already running, otherwise
+ * open a new one there.
+ *
+ * This is a transport, not an intent — every dialect that runs as a command ends
+ * up here, which is why it is Host machinery rather than something each adapter
+ * repeats.
+ *
+ * @returns {Promise<object|null>} Null when no resume command is known.
+ */
+async function openInTerminal(card) {
   const cli = resolveCmuxCli();
 
   // A session cmux is already running gets *focused*, not resumed. Launching a
@@ -1351,6 +1341,42 @@ async function openOriginal(value) {
   const cwd = typeof card.cwd === "string" && card.cwd !== "" ? card.cwd : home();
   const launched = await launchInTerminal(cwd, command, `${card.agentLabel} · ${card.title}`);
   return { ...launched, sessionId: card.sessionId };
+}
+
+/**
+ * Walk an adapter's open plan, best step first.
+ *
+ * The plan is the adapter's; the transports below are the Host's. A step that
+ * cannot be honoured — a deep link nothing registers, a terminal that refuses to
+ * open — falls through to the next, and the default plan is a single terminal
+ * step, so a dialect only has to say something when it has more than one option.
+ */
+async function openOriginal(value) {
+  const { card } = value;
+  const adapter = adapterOf(card.agent);
+  if (adapter?.clientOwned === true) {
+    return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
+  }
+
+  const plan = adapter?.openPlan?.(card) ?? [{ kind: "terminal" }];
+  for (const step of plan) {
+    if (step.kind === "app") {
+      if (typeof step.url !== "string" || step.url === "") continue;
+      try {
+        await execFileAsync("open", [step.url], { timeout: 10000, maxBuffer: 1024 * 1024 });
+        return { kind: "desktop", sessionId: card.sessionId, command: `open ${step.url}`, terminal: step.label ?? "the app" };
+      } catch {
+        /* Nothing handles the scheme: the next step is the point of a plan. */
+      }
+      continue;
+    }
+    if (step.kind === "terminal") {
+      const opened = await openInTerminal(card);
+      if (opened !== null) return opened;
+    }
+  }
+
+  return { kind: "manual", sessionId: card.sessionId, command: null, reason: "no way to open this session on this machine" };
 }
 
 /**

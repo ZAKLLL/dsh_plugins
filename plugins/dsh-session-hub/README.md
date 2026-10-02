@@ -314,15 +314,30 @@ Codex 的索引是**先写临时文件再 rename** 重写的，写到一半被�
 
 ---
 
-## 用原 agent 打开：cmux 优先
+## 用原 agent 打开：顺序由 adapter 声明
 
-「打开」按这个顺序尝试，任何一步失败才落到下一步：
+**切换顺序是 adapter 的，传输方式是宿主的。** adapter 声明一个**有序计划**，宿主逐步执行：
 
-1. **该 session 自己的桌面应用深链**（目前只有 codex 声明 `codex://threads/<id>`）
-2. **已在 cmux 里运行的会话 → 聚焦它那个 workspace**（`cmux select-workspace`），而不是再 resume 一份
-3. **在 cmux 里新开 workspace 跑 resume 命令**
-4. cmux 没在运行 → **先启动 cmux 再试一次**
-5. 都不行 → Terminal.app
+```js
+// codex 声明「先试桌面端深链，不行再走终端」
+openPlan: (card) => [
+  { kind: "app", url: `codex://threads/${card.sessionId}`, label: "Codex" },
+  { kind: "terminal" },
+],
+```
+
+**为什么这么分**：只有 adapter 知道自己的 agent 听得懂什么（有没有桌面端、深链长什么样）；而「把 URL 交给系统」「聚焦一个已经开着的终端」「新开一个」这些传输方式对每个方言都一样，属于宿主。
+
+没声明 `openPlan` 的方言默认 `[{ kind: "terminal" }]`——所以 claude / pi / gemini / opencode 什么都不用写。
+
+**一条硬性不变量**：计划必须以 `terminal` 步收尾。否则在没装那个桌面端的机器上，会话就**完全打不开**了。测试守着这条。
+
+终端步内部（宿主）依次是：
+
+1. **已在 cmux 里运行的会话 → 聚焦它那个 workspace**（`cmux select-workspace`），而不是再 resume 一份
+2. **在 cmux 里新开 workspace 跑 resume 命令**
+3. cmux 没在运行 → **先启动 cmux 再试一次**
+4. 都不行 → Terminal.app
 
 > 第 4 步是补上的。cmux 的整套命令只有**裸的 `cmux <path>` 那种形式**会「launches cmux if needed」，`new-workspace` 需要它**已经在跑**（帮助原文：Create a new workspace in the caller's window）。所以 cmux 关着的时候，每一次「打开」都静默落到了 Terminal.app——看起来就像「没有优先用 cmux」。
 

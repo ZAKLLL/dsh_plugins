@@ -225,16 +225,21 @@ export default defineAdapter({
    * The Codex desktop app registers `codex://` and builds thread links from a
    * `codex://threads/` prefix.
    *
-   * Only `codex://threads/new` is provably constructed by this CLI — the id form
-   * is inferred, not confirmed, because the app is not installed on this machine
-   * and its Info.plist could not be read. That is why the Host merely tries it:
-   * when nothing handles the URL the session still opens in a terminal, and when
-   * the app is there and the form is right it lands on the thread.
+   * Only `codex://threads/new` is provably constructed by this CLI and its
+   * app-server protocol carries `thread/resume`, but the id form itself is
+   * inferred rather than confirmed. That is exactly why it is the first *step*
+   * instead of the only one: a URL nothing handles falls through to the
+   * terminal, which is what a machine without the app gets.
+   *
+   * `codex app` is deliberately absent — it fetches an installer when the app is
+   * missing, and opening a session must not start a download.
    */
-  desktopOpen: (card) =>
-    typeof card.sessionId === "string" && card.sessionId !== ""
-      ? { url: `codex://threads/${card.sessionId}`, label: "Codex" }
-      : null,
+  openPlan: (card) => [
+    ...(typeof card.sessionId === "string" && card.sessionId !== ""
+      ? [{ kind: "app", url: `codex://threads/${card.sessionId}`, label: "Codex" }]
+      : []),
+    { kind: "terminal" },
+  ],
   sessionFile: (card) => ({ path: card.file, kind: "file", label: handoffName(card) }),
   label: LABEL,
   executables: ["codex"],
