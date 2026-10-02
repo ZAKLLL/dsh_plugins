@@ -107,6 +107,8 @@ window.__ModuleLoader__.load({
       liveStoreSource: "read from its own session store",
       liveIdle: "No agent is running right now",
       reference: "Reference this session in the draft",
+      focusIn: "Jump to the {terminal} window it is already running in",
+      focused: "Switched to its {terminal} window",
       referenceNone: "This session has no store that can be referenced",
       liveHint: "Select a tile for detail",
       detailDir: "Directory",
@@ -208,6 +210,8 @@ window.__ModuleLoader__.load({
       liveStoreSource: "从它自己的会话记录读取",
       liveIdle: "目前没有 agent 在运行",
       reference: "把这条会话引用进草稿",
+      focusIn: "跳到它正在运行的 {terminal} 窗口",
+      focused: "已切换到它的 {terminal} 窗口",
       referenceNone: "这条会话没有可作为引用目标的存储",
       liveHint: "点方块看详情",
       detailDir: "目录",
@@ -367,6 +371,7 @@ window.__ModuleLoader__.load({
 .sh-tile-title{color:var(--dsw-alias-label-primary);font-size:12px;line-height:16px;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;white-space:normal}
 .sh-tile-proj{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .sh-tile-foot{margin-top:auto;align-items:center;gap:5px;display:flex;min-width:0}
+.sh-tile .sh-icon-btn{width:18px;height:18px}
 .sh-tile-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
 .sh-tile-badge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;line-height:13px;padding:0 4px}
 .sh-tile-badge-wait{color:var(--dsw-alias-state-error-primary)}
@@ -469,6 +474,19 @@ window.__ModuleLoader__.load({
       if (delta < 24 * 60 * minute) return `${Math.floor(delta / (60 * minute))}h`;
       if (delta < 30 * 24 * 60 * minute) return `${Math.floor(delta / (24 * 60 * minute))}d`;
       return new Date(ms).toISOString().slice(0, 10);
+    }
+
+    /**
+     * What the open action will do, for its tooltip.
+     *
+     * A session cmux is already running gets focused rather than resumed, so the
+     * tooltip has to say which of the two it is — otherwise one icon means two
+     * very different things.
+     */
+    function sessionOpenTitle(t, session) {
+      if (session.agent === "dsh") return t("openInDsh");
+      if (typeof session.surfaceId === "string" && session.surfaceId !== "") return t("focusIn", { terminal: "cmux" });
+      return [t("resumeIn", { terminal: "cmux" }), session.resumeCommand].filter(Boolean).join(" — ");
     }
 
     /** A running time, kept coarse: 3s / 4m / 2h 10m / 1d 3h. */
@@ -948,7 +966,9 @@ window.__ModuleLoader__.load({
         }
         try {
           const result = await hub("open", { key: card.key });
-          if (result.kind === "cmux" || result.kind === "terminal") {
+          if (result.kind === "focus") {
+            say(t("focused", { terminal: result.terminal ?? "cmux" }));
+          } else if (result.kind === "cmux" || result.kind === "terminal") {
             say(t("opened", { terminal: result.terminal ?? "terminal" }));
           } else {
             const command = result.command ?? card.resumeCommand ?? "";
@@ -1902,7 +1922,7 @@ window.__ModuleLoader__.load({
      * it has been up, what it has spent, and what it is waiting on.
      */
     function makeLivePanel(t) {
-      function LiveTile({ session, selected, onSelect, transcriptCache, onDragState }) {
+      function LiveTile({ session, selected, onSelect, onOpen, transcriptCache, onDragState }) {
         const { prefetch, onDragStart, onDragEnd } = useSessionDrag({ card: session, transcriptCache, onDragState });
         const pending = session.pending ?? null;
 
@@ -1934,6 +1954,22 @@ window.__ModuleLoader__.load({
             h("span", { className: "sh-tile-agent" }, session.agentLabel),
             h("span", { className: "sh-spacer" }),
             h("span", { className: "sh-tile-time" }, formatDuration(session.elapsedMs)),
+            // Jump straight out of the grid: opening the detail panel first is
+            // two clicks for the one thing a tile is usually wanted for.
+            h(
+              "button",
+              {
+                type: "button",
+                className: "sh-icon-btn",
+                title: sessionOpenTitle(t, session),
+                "aria-label": sessionOpenTitle(t, session),
+                onClick: (event) => {
+                  event.stopPropagation();
+                  onOpen(session);
+                },
+              },
+              h(OpenIcon),
+            ),
           ),
           // The title is the point of a tile: without it the grid says "something
           // is running" but not what.
@@ -1996,10 +2032,7 @@ window.__ModuleLoader__.load({
             ? "\u2014"
             : `${formatDuration(session.elapsedMs)}${session.startedAt ? ` \u00b7 ${new Date(session.startedAt).toLocaleTimeString()}` : ""}`;
 
-        const openTitle =
-          session.agent === "dsh"
-            ? t("openInDsh")
-            : [t("resumeIn", { terminal: "cmux" }), session.resumeCommand].filter(Boolean).join(" \u2014 ");
+        const openTitle = sessionOpenTitle(t, session);
 
         return h(
           "div",
@@ -2135,6 +2168,7 @@ window.__ModuleLoader__.load({
                           key: session.key,
                           session,
                           selected: session.key === selected,
+                          onOpen,
                           onSelect: () => setSelected((current) => (current === session.key ? null : session.key)),
                           transcriptCache,
                           onDragState,

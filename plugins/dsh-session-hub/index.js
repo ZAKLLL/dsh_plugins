@@ -1216,6 +1216,26 @@ async function openOriginal(value) {
     return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
   }
 
+  const cli = resolveCmuxCli();
+
+  // A session cmux is already running gets *focused*, not resumed. Launching a
+  // second copy of a live session is the one outcome nobody wants: it either
+  // fights over the same store or quietly forks the conversation.
+  if (cli !== null) {
+    const records = await readCmuxSessions(false);
+    const row = records.get(`${card.agent}:${card.sessionId}`);
+    const live = row !== undefined && (row.stored_pid_exists === true || pidAlive(row.pid));
+    const workspaceId = typeof row?.workspace_id === "string" && row.workspace_id !== "" ? row.workspace_id : null;
+    if (live && workspaceId !== null) {
+      try {
+        await execFileAsync(cli, ["select-workspace", "--workspace", workspaceId], { timeout: 15000, maxBuffer: 1024 * 1024 });
+        return { kind: "focus", sessionId: card.sessionId, command: null, terminal: "cmux", workspaceId };
+      } catch {
+        /* Falling through launches a fresh one, which is still better than nothing. */
+      }
+    }
+  }
+
   const command = card.resumeCommand ?? resumeCommandFor(card);
   if (command === null) {
     return { kind: "manual", sessionId: card.sessionId, command: null, reason: "no resume command known" };

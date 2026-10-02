@@ -533,6 +533,18 @@ assert.ok(
 );
 
 // The detail panel is what a click opens; the selection is seeded above.
+// A tile jumps straight out, so the grid answers "where is it" without a detour
+// through the detail panel — and that click must not also select the tile.
+const tileButtons = flatten(tiles[0]).filter((node) => node.type === "button");
+assert.equal(tileButtons.length, 1, "a tile must offer a quick jump");
+assert.ok(
+  typeof tileButtons[0].props.title === "string" && tileButtons[0].props.title !== "",
+  "the jump needs a tooltip, because the same icon means focus or resume",
+);
+let jumpStopped = false;
+tileButtons[0].props.onClick({ stopPropagation: () => { jumpStopped = true; } });
+assert.equal(jumpStopped, true, "the jump must not also toggle the tile selection");
+
 const detail = hostElements(live.tree, "sh-lp-card");
 assert.equal(detail.length, 1, "selecting a tile must render its detail panel");
 assert.equal(detail[0].props.draggable, true, "the detail panel must drag too");
