@@ -8,3 +8,7 @@
 
 # Transcripts the Session Hub plugin materializes into a workspace.
 .dsh-session-hub/
+
+# A plugin's own dependencies. Plugins are installed into a DSH profile by
+# absolute path, so their node_modules never belongs to this repository.
+plugins/*/node_modules/

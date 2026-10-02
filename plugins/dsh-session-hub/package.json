@@ -2,7 +2,7 @@
   "name": "dsh-session-hub",
   "version": "0.1.0",
   "private": true,
-  "description": "One panel for every coding-agent session on this machine — DSH, Claude Code, Codex and Gemini CLI — collected across all projects, with drag-to-continue into the current chat and one-click reopen in the original agent.",
+  "description": "One panel for every coding-agent session on this machine — DSH, Claude Code, Codex, Gemini CLI, pi and opencode — collected across all projects: drag one into the current chat to continue it, reopen it in its original agent, watch what is running live, or start a new session in any project.",
   "type": "module",
   "license": "MIT",
   "icon": "./icon.svg",
@@ -15,6 +15,7 @@
   "files": [
     "index.js",
     "client.js",
+    "hook.mjs",
     "cordis.patch.yml",
     "icon.svg",
     "locale/*.json",
