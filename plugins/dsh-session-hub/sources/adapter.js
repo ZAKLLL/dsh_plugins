@@ -162,7 +162,9 @@
  * @property {(card: SessionCard, options: {dir: string}) => Promise<Handoff>} [handoff]
  *   Hand this session over as an attachable file. Omit it when the store is
  *   already one readable file, and the Host returns that file directly; provide
- *   it to dump a portable copy instead (DSH's frames, opencode's database row).
+ *   it to dump a portable copy instead (opencode's database row). A dialect
+ *   may also leave it out *and* keep a non-file `sessionFile.kind`, which means
+ *   there is genuinely nothing to hand over — a DSH session dragged inside DSH.
  *
  * // --- inventory: one directory of session files ----------------------
  * @property {() => string} root Directory to walk. Always present, even for a
