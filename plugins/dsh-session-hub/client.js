@@ -37,6 +37,7 @@ window.__ModuleLoader__.load({
       title: "Agents Session Manager",
       tab: "Agents Session Manager",
       modeList: "List",
+      lastActive: "Last activity",
       guide: "Every coding-agent session on this machine, draggable into the composer.",
       subtitle: "Every coding-agent session on this machine, across every project.",
       close: "Close",
@@ -120,6 +121,7 @@ window.__ModuleLoader__.load({
       title: "Agents 会话管理",
       tab: "Agents 会话管理",
       modeList: "列表",
+      lastActive: "最近交互",
       guide: "本机全部 coding agent 的会话，可拖进输入框交给我。",
       subtitle: "本机全部 coding agent 的会话，跨所有项目汇总在这里。",
       close: "关闭",
@@ -240,6 +242,7 @@ window.__ModuleLoader__.load({
 .sh-group:hover .sh-group-actions{display:inline-flex}
 .sh-group-name{text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14px;line-height:20px;font-weight:600;flex:1;overflow:hidden}
 .sh-group-count{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px;line-height:16px;font-variant-numeric:tabular-nums}
+.sh-group-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:11px;line-height:16px;margin-right:2px}
 .sh-group-arrow{transition:transform .15s var(--ds-ease-in-out,ease);color:var(--dsw-alias-label-caption,var(--dsw-alias-label-tertiary));flex:none;display:inline-flex}
 .sh-group-arrow-open{transform:rotate(90deg)}
 .sh-group-folder{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}
@@ -964,6 +967,13 @@ window.__ModuleLoader__.load({
           }
 
           for (const entry of map.values()) {
+            // The project's own last-interaction time: the newest session in it,
+            // so a collapsed project still says when it was last touched.
+            entry.latestAt = entry.items.reduce(
+              (newest, session) => Math.max(newest, Number.isFinite(session.updatedAt) ? session.updatedAt : 0),
+              0,
+            );
+
             const inBucket = new Set(entry.items.map((session) => session.key));
             const children = new Map();
             const roots = [];
@@ -1264,6 +1274,15 @@ window.__ModuleLoader__.load({
                               h("span", { className: "sh-group-name" }, bucket.label),
                               pinnedProjects.has(id) &&
                                 h("span", { className: "sh-pin-mark", "aria-hidden": true }, h(PinIcon, { filled: true })),
+                              bucket.latestAt > 0 &&
+                                h(
+                                  "span",
+                                  {
+                                    className: "sh-group-time",
+                                    title: `${t("lastActive")}: ${new Date(bucket.latestAt).toLocaleString()}`,
+                                  },
+                                  formatWhen(bucket.latestAt, now),
+                                ),
                               live > 0 && h("span", { className: "sh-group-count" }, `${live} ●`),
                               h("span", { className: "sh-group-count" }, String(bucket.items.length)),
                             ),

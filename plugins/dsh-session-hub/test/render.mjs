@@ -394,6 +394,19 @@ for (const cluster of groupActions) {
   );
 }
 
+// Every project header states when that project was last touched, so a
+// collapsed group still says how recent it is.
+const groupTimes = hostElements(second.tree, "sh-group-time");
+assert.equal(groupTimes.length, groups.length, "every project header must show its last-activity time");
+for (const node of groupTimes) {
+  const text = textOf(node);
+  assert.ok(text.length > 0 && text !== "\u2014", `a project time must be a real reading: ${JSON.stringify(text)}`);
+  assert.ok(
+    typeof node.props.title === "string" && node.props.title.length > 0,
+    "the project time must explain itself on hover",
+  );
+}
+
 // Only the topmost group opens by default; the rest start collapsed, or a
 // corpus of hundreds of sessions across dozens of projects is just noise.
 const opened = groups.filter((head) =>
