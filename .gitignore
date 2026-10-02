@@ -12,3 +12,7 @@
 # A plugin's own dependencies. Plugins are installed into a DSH profile by
 # absolute path, so their node_modules never belongs to this repository.
 plugins/*/node_modules/
+
+# Local-only plugin, deliberately kept out of version control. Installed into
+# the desktop profile by absolute path, so it needs no repository presence.
+plugins/dsh-jvs-console/
