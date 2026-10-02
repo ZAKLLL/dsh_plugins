@@ -31,7 +31,24 @@ root    :  session_id=019ed32f…  id=019ed32f…
 - [ ] 同一 `id` 的多段（最多 6 段）仍然一个文件一张卡片——需要按 id 合并，且 `fullValueByKey` 要按时间拼接各段
 - [ ] 子代理标题仍在漏注入文本：最大标题簇是 21 条 `"The following is the Codex agent history"`、8 条 `"## Handoff ### Goal / design User chose…"`——`looksInjected` 需要认这些委派前言
 
-## 2. 实时视图的详情面板
+## 2. 捕获每条会话最后使用的大模型（**已验证字段路径，未实现**）
+
+**结论：claude / codex / pi 都能拿到，DSH 待查。**
+
+实测（读真实 store 的最后一个相关事件）：
+
+| agent | 字段 | 实测值 |
+| --- | --- | --- |
+| claude | assistant 消息的 `message.model` | `glm-5.3` |
+| codex | 事件的 `payload.model`（晚于 `session_meta`；后者只有 `model_provider: "custom"`） | `gpt-6-luna` |
+| pi | `model_change` 事件的 `provider` + `modelId` | `blueai-relay-200k/glm-5.3` |
+| **dsh** | **未找到**——`model/selection` 在事件词汇表里存在，但最新那条会话里没探到；`assistant/message` 也没有 `model` 字段。需要针对性再查（`model/selection` 的 `data` 形状、或 `request/header`） | — |
+
+**实现位置（不需要新 op）**：这三家的读取都已经在各自的 `readStoreEvent` 里走 store 了，所以把 `model` 加进 reading 即可——`Value` 增加 `model` 字段，`preview` / `messages` / `list` 带出去，行尾或详情面板显示。
+
+**注意**：走的是「最后一个相关事件」，所以它反映的是**当前**用的模型；会话中途换过模型时，更早的消息是别的模型，这一点在 UI 上要说明，不要让它看起来像「整条会话的模型」。
+
+## 3. 实时视图的详情面板
 
 已完成：宿主 `reference` op + 行右侧引用按钮（DSH 走原生 mention，其余走 `@` + `adapter.sessionFile(card).path`）。
 
