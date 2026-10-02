@@ -106,6 +106,21 @@ window.__ModuleLoader__.load({
       liveHookSource: "reported through a hook",
       liveStoreSource: "read from its own session store",
       liveIdle: "No agent is running right now",
+      liveHint: "Select a tile for detail",
+      detailDir: "Directory",
+      detailUptime: "Up for",
+      detailPid: "Process",
+      detailTokens: "Tokens",
+      detailWaiting: "Waiting",
+      waitApproval: "Needs approval",
+      waitTool: "Tool running",
+      noWaiting: "Nothing blocked",
+      noTokens: "none \u2014 this agent records no token usage",
+      tokIn: "in",
+      tokOut: "out",
+      tokCache: "cache",
+      tokTotal: "total",
+      close: "Close",
       newSession: "Start a session in this project",
       spawnTitle: "Start a new session",
       spawnBody: "Pick the agent to run in {project}.",
@@ -190,6 +205,21 @@ window.__ModuleLoader__.load({
       liveHookSource: "由 hook 上报",
       liveStoreSource: "从它自己的会话记录读取",
       liveIdle: "目前没有 agent 在运行",
+      liveHint: "点方块看详情",
+      detailDir: "目录",
+      detailUptime: "运行时长",
+      detailPid: "进程",
+      detailTokens: "Token 用量",
+      detailWaiting: "等待中",
+      waitApproval: "等确认",
+      waitTool: "工具进行中",
+      noWaiting: "没有阻塞",
+      noTokens: "无 —— 该 agent 不记录 token 用量",
+      tokIn: "输入",
+      tokOut: "输出",
+      tokCache: "缓存",
+      tokTotal: "合计",
+      close: "关闭",
       newSession: "在该项目新建会话",
       spawnTitle: "新建会话",
       spawnBody: "选择要在 {project} 里运行的 agent。",
@@ -319,6 +349,21 @@ window.__ModuleLoader__.load({
 .sh-lp-k{color:var(--dsw-alias-label-tertiary);text-transform:uppercase;letter-spacing:.05em;flex:none;min-width:24px;font-size:10px;padding-top:2px}
 .sh-lp-v{color:var(--dsw-alias-label-primary);overflow-wrap:anywhere;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:6;overflow:hidden;white-space:pre-wrap}
 .sh-lp-kind{color:var(--dsw-alias-label-caption,var(--dsw-alias-label-tertiary));font-size:10px}
+.sh-lp-title{color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;font-weight:600;overflow-wrap:anywhere}
+.sh-lp-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.sh-live-detail{margin-top:8px}
+.sh-tiles{flex-wrap:wrap;gap:6px;display:flex}
+.sh-tile{border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);cursor:pointer;color:inherit;font:inherit;text-align:left;flex-direction:column;gap:2px;padding:7px 8px;width:106px;min-height:66px;display:flex;overflow:hidden}
+.sh-tile:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.sh-tile:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:1px}
+.sh-tile-on{border-color:var(--color-blue-500)}
+.sh-tile-wait{border-color:var(--dsw-alias-state-error-primary)}
+.sh-tile-agent{color:var(--dsw-alias-label-primary);font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sh-tile-proj{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sh-tile-foot{margin-top:auto;align-items:center;gap:4px;display:flex;min-width:0}
+.sh-tile-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
+.sh-tile-badge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;line-height:13px;padding:0 4px}
+.sh-tile-badge-wait{color:var(--dsw-alias-state-error-primary)}
 `;
 
     function installStyles() {
@@ -415,6 +460,27 @@ window.__ModuleLoader__.load({
       if (delta < 24 * 60 * minute) return `${Math.floor(delta / (60 * minute))}h`;
       if (delta < 30 * 24 * 60 * minute) return `${Math.floor(delta / (24 * 60 * minute))}d`;
       return new Date(ms).toISOString().slice(0, 10);
+    }
+
+    /** A running time, kept coarse: 3s / 4m / 2h 10m / 1d 3h. */
+    function formatDuration(ms) {
+      if (!Number.isFinite(ms) || ms < 0) return "\u2014";
+      const seconds = Math.floor(ms / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+      const days = Math.floor(hours / 24);
+      return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+    }
+
+    /** Token counts compactly: 812 / 4.7k / 1.2M. */
+    function formatTokens(value) {
+      if (!Number.isFinite(value) || value <= 0) return "0";
+      if (value < 1000) return String(value);
+      if (value < 1000000) return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}k`;
+      return `${(value / 1000000).toFixed(1)}M`;
     }
 
     function slugify(text, max = 40) {
@@ -537,6 +603,15 @@ window.__ModuleLoader__.load({
       },
         h("path", { d: "M8 3.4v9.2" }),
         h("path", { d: "M3.4 8h9.2" }));
+    }
+
+    function CloseIcon() {
+      return h("svg", {
+        viewBox: "0 0 16 16", width: 13, height: 13, fill: "none", stroke: "currentColor",
+        strokeWidth: 1.6, strokeLinecap: "round", "aria-hidden": true,
+      },
+        h("path", { d: "M4.2 4.2l7.6 7.6" }),
+        h("path", { d: "M11.8 4.2l-7.6 7.6" }));
     }
 
     /** The agents a project can start a session with, in a stable order. */
@@ -1739,20 +1814,103 @@ window.__ModuleLoader__.load({
     /**
     /**
     /**
+    /**
      * The live preview, as one of the right Sidebar tab's modes.
      *
-     * A block per running agent: what it was asked, what it has produced, and
-     * which of the two sources that reading came from. Every block carries the
-     * same two verbs a list row does — hand this session the history, or resume
-     * it in its own agent — and drags into the composer the same way.
+     * A grid of small tiles — one per running agent — plus a detail panel for
+     * whichever tile is selected. The grid answers "what is running at all";
+     * the panel is for the questions that need room: which directory, how long
+     * it has been up, what it has spent, and what it is waiting on.
      */
     function makeLivePanel(t) {
-      function LiveCard({ session, now, onContinue, onOpen, transcriptCache, onDragState }) {
+      function LiveTile({ session, selected, onSelect, transcriptCache, onDragState }) {
         const { prefetch, onDragStart, onDragEnd } = useSessionDrag({ card: session, transcriptCache, onDragState });
+        const pending = session.pending ?? null;
+
+        return h(
+          "div",
+          {
+            className: `sh-tile${selected ? " sh-tile-on" : ""}${pending !== null ? " sh-tile-wait" : ""}`,
+            role: "button",
+            tabIndex: 0,
+            draggable: true,
+            "aria-pressed": selected,
+            onDragStart,
+            onDragEnd,
+            onPointerEnter: prefetch,
+            onClick: onSelect,
+            onKeyDown: (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onSelect();
+            },
+            title: [session.agentLabel, session.cwd].filter(Boolean).join(" · "),
+          },
+          h("span", { className: `sh-agent-dot sh-agent-dot-${session.agent}`, "aria-hidden": true }),
+          h("span", { className: "sh-tile-agent" }, session.agentLabel),
+          h("span", { className: "sh-tile-proj" }, session.project ?? "\u2014"),
+          h(
+            "span",
+            { className: "sh-tile-foot" },
+            h("span", { className: "sh-tile-time" }, formatDuration(session.elapsedMs)),
+            pending !== null &&
+              h(
+                "span",
+                { className: `sh-tile-badge${pending.kind === "approval" ? " sh-tile-badge-wait" : ""}` },
+                pending.kind === "approval" ? t("waitApproval") : t("waitTool"),
+              ),
+          ),
+        );
+      }
+
+      function DetailLine({ label, value, mono }) {
+        return h(
+          "div",
+          { className: "sh-lp-line" },
+          h("span", { className: "sh-lp-k" }, label),
+          h("span", { className: `sh-lp-v${mono === true ? " sh-lp-mono" : ""}` }, value),
+        );
+      }
+
+      function LiveDetail({ session, onContinue, onOpen, onClose, transcriptCache, onDragState }) {
+        const { prefetch, onDragStart, onDragEnd } = useSessionDrag({ card: session, transcriptCache, onDragState });
+        const pending = session.pending ?? null;
+        const tokens = session.tokens ?? null;
+
+        const tokensText =
+          tokens === null
+            ? t("noTokens")
+            : [
+                `${t("tokIn")} ${formatTokens(tokens.input)}`,
+                `${t("tokOut")} ${formatTokens(tokens.output)}`,
+                tokens.cacheRead + tokens.cacheWrite > 0
+                  ? `${t("tokCache")} ${formatTokens(tokens.cacheRead + tokens.cacheWrite)}`
+                  : null,
+                `${t("tokTotal")} ${formatTokens(tokens.total)}`,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+
+        const waitingText =
+          pending === null
+            ? t("noWaiting")
+            : [
+                pending.kind === "approval" ? t("waitApproval") : t("waitTool"),
+                pending.label,
+                pending.count > 1 ? `\u00d7${pending.count}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+
+        const uptimeText =
+          session.elapsedMs === null || session.elapsedMs === undefined
+            ? "\u2014"
+            : `${formatDuration(session.elapsedMs)}${session.startedAt ? ` \u00b7 ${new Date(session.startedAt).toLocaleTimeString()}` : ""}`;
+
         const openTitle =
           session.agent === "dsh"
             ? t("openInDsh")
-            : [t("resumeIn", { terminal: "cmux" }), session.resumeCommand].filter(Boolean).join(" — ");
+            : [t("resumeIn", { terminal: "cmux" }), session.resumeCommand].filter(Boolean).join(" \u2014 ");
 
         return h(
           "div",
@@ -1762,16 +1920,14 @@ window.__ModuleLoader__.load({
             onDragStart,
             onDragEnd,
             onPointerEnter: prefetch,
-            title: [session.agentLabel, session.cwd].filter(Boolean).join(" · "),
           },
           h(
             "div",
             { className: "sh-lp-card-head" },
-            h("span", { className: `sh-agent-dot sh-agent-dot-${session.agent}` }),
+            h("span", { className: `sh-agent-dot sh-agent-dot-${session.agent}`, "aria-hidden": true }),
             h("span", { className: "sh-lp-agent" }, session.agentLabel),
-            session.project !== null && h("span", { className: "sh-lp-proj" }, session.project),
+            h("span", { className: "sh-lp-proj" }, session.project ?? "\u2014"),
             h("span", { className: "sh-spacer" }),
-            h("span", { className: "sh-group-count" }, formatWhen(session.at, now)),
             h(
               "span",
               { className: "sh-lp-actions" },
@@ -1785,8 +1941,18 @@ window.__ModuleLoader__.load({
                 { type: "button", className: "sh-icon-btn", title: openTitle, "aria-label": openTitle, onClick: () => onOpen(session) },
                 h(OpenIcon),
               ),
+              h(
+                "button",
+                { type: "button", className: "sh-icon-btn", title: t("close"), "aria-label": t("close"), onClick: onClose },
+                h(CloseIcon),
+              ),
             ),
           ),
+          h("div", { className: "sh-lp-title" }, session.title),
+          h(DetailLine, { label: t("detailDir"), value: session.cwd ?? "\u2014", mono: true }),
+          h(DetailLine, { label: t("detailUptime"), value: uptimeText }),
+          h(DetailLine, { label: t("detailTokens"), value: tokensText }),
+          h(DetailLine, { label: t("detailWaiting"), value: waitingText }),
           h(
             "div",
             { className: "sh-lp-line" },
@@ -1807,6 +1973,7 @@ window.__ModuleLoader__.load({
         const [state, setState] = React.useState({ running: 0, sessions: [], error: null });
         const [now, setNow] = React.useState(() => Date.now());
         const [reloadAt, setReloadAt] = React.useState(0);
+        const [selected, setSelected] = React.useState(null);
 
         React.useEffect(() => {
           let cancelled = false;
@@ -1833,6 +2000,9 @@ window.__ModuleLoader__.load({
           };
         }, [reloadAt]);
 
+        // A session that stopped running must not leave its detail panel open.
+        const detail = state.sessions.find((session) => session.key === selected) ?? null;
+
         return h(
           React.Fragment,
           null,
@@ -1843,6 +2013,7 @@ window.__ModuleLoader__.load({
             h("span", { className: "sh-title" }, t("live")),
             h("span", { className: "sh-group-count" }, t("liveRunning", { n: state.running })),
             h("span", { className: "sh-spacer" }),
+            state.sessions.length > 1 && h("span", { className: "sh-group-count" }, t("liveHint")),
             h(
               "button",
               {
@@ -1862,16 +2033,32 @@ window.__ModuleLoader__.load({
               ? h("div", { className: "sh-empty" }, state.error)
               : state.sessions.length === 0
                 ? h("div", { className: "sh-empty" }, t("liveIdle"))
-                : state.sessions.map((session) =>
-                    h(LiveCard, {
-                      key: session.key,
-                      session,
-                      now,
-                      onContinue,
-                      onOpen,
-                      transcriptCache,
-                      onDragState,
-                    }),
+                : h(
+                    React.Fragment,
+                    null,
+                    h(
+                      "div",
+                      { className: "sh-tiles" },
+                      state.sessions.map((session) =>
+                        h(LiveTile, {
+                          key: session.key,
+                          session,
+                          selected: session.key === selected,
+                          onSelect: () => setSelected((current) => (current === session.key ? null : session.key)),
+                          transcriptCache,
+                          onDragState,
+                        }),
+                      ),
+                    ),
+                    detail !== null &&
+                      h(LiveDetail, {
+                        session: detail,
+                        onContinue,
+                        onOpen,
+                        onClose: () => setSelected(null),
+                        transcriptCache,
+                        onDragState,
+                      }),
                   ),
           ),
         );

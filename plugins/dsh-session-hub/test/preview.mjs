@@ -32,12 +32,19 @@ const mod = await import("../index.js");
 const STAMP = `previewselftest-${process.pid}-${Date.now()}`;
 const RUNNING_ID = `session-${STAMP}-running`;
 const IDLE_ID = `session-${STAMP}-idle`;
+// One DSH session with an approval ask and no decision (genuinely waiting),
+// and one whose ask was decided (nothing waiting).
+const PENDING_ID = `session-${STAMP}-pending`;
+const RESOLVED_ID = `session-${STAMP}-resolved`;
+const APPROVAL_TOOL = "plugin_manager";
+
 const RUNNING_INPUT = "把最后那段日志贴给我看看";
 const RUNNING_OUTPUT = "日志在这里，最后一行是超时，我准备把超时从 30s 提到 120s。";
 const HOOK_INPUT = "hook 报上来的输入";
 const HOOK_OUTPUT = "hook 报上来的输出";
 
-const registry = { get: (id) => (id === RUNNING_ID ? { status: "running" } : undefined) };
+const RUNNING_IDS = new Set([RUNNING_ID, PENDING_ID, RESOLVED_ID]);
+const registry = { get: (id) => (RUNNING_IDS.has(id) ? { status: "running" } : undefined) };
 let route = null;
 mod.apply({
   connection: { fetch: { register: (registered) => { route = registered; } } },
@@ -72,6 +79,7 @@ const PI_ID = `01a0${Date.now().toString(16).slice(-16)}`;
 const PI_WORKSPACE = join(tmpdir(), `dsh-session-hub-pi-${STAMP}`);
 const PI_DIR = join(PI_ROOT, `-dsh-session-hub-${STAMP}`);
 const PI_FILE = join(PI_DIR, `${new Date().toISOString().replace(/[:.]/g, "-")}_${PI_ID}.jsonl`);
+const PI_TOKENS = { input: 4719, output: 235, cacheRead: 1024, cacheWrite: 0, total: 5978 };
 const PI_INPUT = "pi 收到的输入";
 const PI_OUTPUT = "pi 目前的产出";
 const PI_SCRIPT = join(PI_WORKSPACE, "pi-selftest");
@@ -81,11 +89,19 @@ let spoolBackup = null;
 let spoolExisted = true;
 
 /** One zstd frame over JSONL: a session with one human turn and one reply. */
-function fixture(id, cwd, input, output) {
+function fixture(id, cwd, input, output, extra = []) {
   const header = { type: "session", version: 4, id, createdAt: Date.now(), cwd, isSeeded: false, delegationDepth: 0, agentPreset: "standard" };
   const user = { type: "user/message", seq: 2, time: Date.now(), data: { role: "user", content: [{ type: "text", text: input }] } };
   const assistant = { type: "assistant/message", seq: 3, time: Date.now(), data: { message: { role: "assistant", content: [{ type: "text", text: output }] } } };
-  return zlib.zstdCompressSync(Buffer.from(`${JSON.stringify(header)}\n${JSON.stringify(user)}\n${JSON.stringify(assistant)}\n`, "utf8"));
+  const lines = [header, user, assistant, ...extra].map((event) => JSON.stringify(event));
+  return zlib.zstdCompressSync(Buffer.from(lines.join("\n") + "\n", "utf8"));
+}
+
+/** An approval pair: the ask always, the decision only when it was answered. */
+function approvalEvents(id, decided) {
+  const asked = { type: "approval/asked", seq: 4, time: Date.now(), data: { id, toolName: APPROVAL_TOOL, callId: `call-${id}` } };
+  if (!decided) return [asked];
+  return [asked, { type: "approval/decided", seq: 5, time: Date.now(), data: { id } }];
 }
 
 /** One pi session: a header plus a single user/assistant pair. */
@@ -94,7 +110,16 @@ function piFixture(id, cwd, input, output) {
     [
       JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd }),
       JSON.stringify({ type: "message", id: "m1", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: input }] } }),
-      JSON.stringify({ type: "message", id: "m2", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: output }] } }),
+      JSON.stringify({
+        type: "message",
+        id: "m2",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: output }],
+          usage: { input: PI_TOKENS.input, output: PI_TOKENS.output, cacheRead: PI_TOKENS.cacheRead, cacheWrite: PI_TOKENS.cacheWrite },
+        },
+      }),
     ].join("\n") + "\n"
   );
 }
@@ -123,13 +148,15 @@ async function cleanup() {
 }
 
 try {
-  for (const [id, input, output] of [
-    [RUNNING_ID, RUNNING_INPUT, RUNNING_OUTPUT],
-    [IDLE_ID, "这个会话已经停了", "所以它不该出现在预览里"],
+  for (const [id, input, output, extra] of [
+    [RUNNING_ID, RUNNING_INPUT, RUNNING_OUTPUT, []],
+    [IDLE_ID, "这个会话已经停了", "所以它不该出现在预览里", []],
+    [PENDING_ID, "跑一下安装", "正在请求权限", approvalEvents(`${STAMP}-ask-open`, false)],
+    [RESOLVED_ID, "跑一下安装", "权限已经批过了", approvalEvents(`${STAMP}-ask-done`, true)],
   ]) {
     const dir = join(SLUG, id);
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "session.v4.jsonl.zstd"), fixture(id, `/tmp/${STAMP}`, input, output));
+    await writeFile(join(dir, "session.v4.jsonl.zstd"), fixture(id, `/tmp/${STAMP}`, input, output, extra));
   }
   try {
     spoolBackup = await readFile(SPOOL, "utf8");
@@ -143,6 +170,9 @@ try {
   const card = list.sessions.find((session) => session.agent === "dsh" && session.sessionId === RUNNING_ID);
   assert.ok(card, "the running fixture must be listed");
   assert.equal(card.cwd, `/tmp/${STAMP}`);
+  const pendingCard = list.sessions.find((session) => session.agent === "dsh" && session.sessionId === PENDING_ID);
+  const resolvedCard = list.sessions.find((session) => session.agent === "dsh" && session.sessionId === RESOLVED_ID);
+  assert.ok(pendingCard && resolvedCard, "the approval fixtures must be listed");
 
   // ---- the running fixture appears, the stopped one does not ----------
   // Assertions are scoped to the fixtures, not to the totals: this machine may
@@ -165,6 +195,19 @@ try {
   assert.equal(preview.output, RUNNING_OUTPUT, "the latest output must come from the store tail");
   assert.ok(preview.at !== null, "the preview must carry a timestamp");
   console.log("preview: derived input and output from a running session's store");
+
+  // ---- what a session has spent, and what it is waiting on -----------
+  // An unanswered approval ask is the one "waiting" signal that is a fact
+  // rather than a guess, so it must be reported exactly.
+  const pendingPreview = first.sessions.find((session) => session.key === pendingCard.key);
+  assert.ok(pendingPreview, "the waiting fixture must be previewed");
+  assert.equal(pendingPreview.pending?.kind, "approval", "an unanswered approval ask must be reported");
+  assert.equal(pendingPreview.pending.label, APPROVAL_TOOL, "and it must name the tool it wants");
+
+  const resolvedPreview = first.sessions.find((session) => session.key === resolvedCard.key);
+  assert.ok(resolvedPreview, "the answered fixture must be previewed");
+  assert.equal(resolvedPreview.pending, null, "a decided approval must not read as waiting");
+  console.log("preview: an unanswered approval reads as waiting, a decided one does not");
 
   // ---- a hook report overrides the derivation ------------------------
   // Flags rather than stdin: async `execFile` has no `input` option (that is
@@ -222,6 +265,22 @@ try {
   assert.equal(piPreview.input, PI_INPUT, "the pi preview must read its input from the store");
   assert.equal(piPreview.output, PI_OUTPUT, "the pi preview must read its latest output from the store");
   console.log("preview: the pi preview carries its input and latest output");
+
+  // The usage numbers are summed from the store, and the duration comes from the
+  // process table — neither is guessed.
+  const tokens = piPreview.tokens;
+  assert.ok(tokens, "a pi preview must carry token usage");
+  assert.equal(tokens.input, PI_TOKENS.input, "input tokens must be summed from the store");
+  assert.equal(tokens.output, PI_TOKENS.output, "output tokens must be summed from the store");
+  assert.equal(tokens.cacheRead, PI_TOKENS.cacheRead, "cache reads must be counted");
+  assert.equal(tokens.total, PI_TOKENS.total, "the total must be the sum of the parts");
+  assert.ok(piPreview.startedAt > 0, "a running session must report when its process started");
+  assert.ok(
+    Number.isFinite(piPreview.elapsedMs) && piPreview.elapsedMs > 0,
+    `a running session must report how long it has been up: ${piPreview.elapsedMs}`,
+  );
+  assert.ok(piPreview.pid > 0, "and the process it belongs to");
+  console.log(`preview: pi tokens ${tokens.total} summed, up for ${Math.round(piPreview.elapsedMs / 1000)}s`);
 
   console.log("\npreview test: all assertions passed");
 } finally {

@@ -739,6 +739,19 @@ async function canonical(path) {
   return value;
 }
 
+/**
+ * Seconds from a `ps` `etime` field: `MM:SS`, `HH:MM:SS` or `DD-HH:MM:SS`.
+ *
+ * @returns {number|null} Elapsed seconds, or null when the field is not one of
+ *   those shapes.
+ */
+function parseEtime(text) {
+  const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(String(text ?? "").trim());
+  if (match === null) return null;
+  const [, days, hours, minutes, seconds] = match;
+  return Number(days ?? 0) * 86400 + Number(hours ?? 0) * 3600 + Number(minutes) * 60 + Number(seconds);
+}
+
 /** Every live agent process on this machine, refreshed on a short interval. */
 async function scanAgentProcesses() {
   const now = Date.now();
@@ -746,13 +759,14 @@ async function scanAgentProcesses() {
 
   const found = [];
   try {
-    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,command="], { timeout: 8000, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,etime=,command="], { timeout: 8000, maxBuffer: 8 * 1024 * 1024 });
     for (const line of stdout.split("\n")) {
-      // `ps` prints " <pid> <executable> <args…>".
-      const match = /^\s*(\d+)\s+(\S+)\s*(.*)$/.exec(line);
+      // `ps` prints " <pid> <etime> <executable> <args…>".
+      const match = /^\s*(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
       if (match === null) continue;
       const pid = Number(match[1]);
-      const args = match[3] ?? "";
+      const elapsed = parseEtime(match[2]);
+      const args = match[4] ?? "";
 
       // The executable, and the script it may hand off to: macOS reports a
       // shebang script as `/bin/sh /path/to/agent`, and a wrapper as
@@ -760,11 +774,19 @@ async function scanAgentProcesses() {
       // `node` and matches nothing. Only the *first* argument is considered, so
       // a later argument that merely mentions an agent name is not a match.
       const argv = args.split(/\s+/).filter(Boolean);
-      const names = [basename(match[2]), argv[0] === undefined ? null : basename(argv[0])];
+      const names = [basename(match[3]), argv[0] === undefined ? null : basename(argv[0])];
       const agent = AGENT_EXECUTABLES.find((name) => names.some((candidate) => candidate !== null && namesAgent(candidate, name)));
       if (agent === undefined || !Number.isInteger(pid) || pid <= 0) continue;
 
-      found.push({ agent, pid, args, sessionId: sessionIdFromArgs(args), cwd: null });
+      found.push({
+        agent,
+        pid,
+        args,
+        sessionId: sessionIdFromArgs(args),
+        cwd: null,
+        // How long the process has been up, straight from the process table.
+        startedAt: elapsed === null ? null : Date.now() - elapsed * 1000,
+      });
     }
   } catch {
     /* No `ps` — the other two sources still work. */
@@ -1924,6 +1946,234 @@ function previewFrom(agent, events) {
 const previewCache = new Map();
 
 /** Derive one session's preview from the tail of its own store. */
+/* ------------------------------------------------------------------ *
+ * What a running session is doing: tokens spent, and what it waits on
+ * ------------------------------------------------------------------ */
+
+const STORE_READ_CHUNK = 1024 * 1024;
+const STORE_READINGS_MAX = 512;
+
+/**
+ * Incremental readings taken from a running session's own store.
+ *
+ * The live view polls every couple of seconds, so re-reading a multi-megabyte
+ * transcript each time is the wrong shape. JSONL stores are append-only, so
+ * these keep a byte offset and parse only what was appended; the accumulators
+ * carry across calls, which also means a partial trailing line simply waits for
+ * the rest of itself. A store that shrank was rotated or replaced and resets.
+ *
+ * DSH is the exception: its store is a run of zstd frames, not plain JSONL, so
+ * byte offsets are not line boundaries there. Its files are also the small ones,
+ * so it is decoded whole and gated on mtime + size.
+ */
+const storeReadings = new Map();
+
+function freshReading() {
+  return {
+    offset: 0,
+    stamped: "",
+    carry: "",
+    tokens: null,
+    asked: new Set(),
+    decided: new Set(),
+    approvalTools: new Map(),
+    tools: new Map(),
+  };
+}
+
+function num(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function blocksOf(content) {
+  return Array.isArray(content) ? content : [];
+}
+
+/** Add one turn's usage onto the running total. */
+function accumulate(reading, parts) {
+  const current = reading.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  current.input += num(parts.input);
+  current.output += num(parts.output);
+  current.cacheRead += num(parts.cacheRead);
+  current.cacheWrite += num(parts.cacheWrite);
+  current.total = current.input + current.output + current.cacheRead + current.cacheWrite;
+  reading.tokens = current;
+}
+
+/** Track one tool call by id, so a call that never finished stays visible. */
+function trackTool(reading, id, name, present) {
+  if (typeof id !== "string" || id === "") return;
+  if (present) reading.tools.set(id, typeof name === "string" ? name : null);
+  else reading.tools.delete(id);
+}
+
+/** Fold one store event into a reading. Each dialect reports different things. */
+function readEvent(agent, event, reading) {
+  if (agent === "claude") {
+    if (event.type === "assistant") {
+      const usage = event.message?.usage;
+      if (usage !== null && usage !== undefined) {
+        accumulate(reading, {
+          input: usage.input_tokens,
+          output: usage.output_tokens,
+          cacheRead: usage.cache_read_input_tokens,
+          cacheWrite: usage.cache_creation_input_tokens,
+        });
+      }
+      for (const block of blocksOf(event.message?.content)) {
+        if (block?.type === "tool_use") trackTool(reading, block.id, block.name, true);
+      }
+    } else if (event.type === "user") {
+      for (const block of blocksOf(event.message?.content)) {
+        if (block?.type === "tool_result") trackTool(reading, block.tool_use_id, null, false);
+      }
+    }
+    return;
+  }
+
+  if (agent === "pi") {
+    if (event.type === "message" && event.message?.role === "assistant") {
+      const usage = event.message.usage;
+      if (usage !== null && usage !== undefined) {
+        accumulate(reading, {
+          input: usage.input,
+          output: usage.output,
+          cacheRead: usage.cacheRead,
+          cacheWrite: usage.cacheWrite,
+        });
+      }
+    }
+    return;
+  }
+
+  if (agent === "codex") {
+    const payload = event.payload ?? {};
+    if (event.type === "event_msg" && payload.type === "token_count") {
+      // Codex reports a running total, so this replaces rather than adds.
+      const total = payload.info?.total_token_usage ?? {};
+      reading.tokens = {
+        input: num(total.input_tokens),
+        output: num(total.output_tokens) + num(total.reasoning_output_tokens),
+        cacheRead: num(total.cached_input_tokens),
+        cacheWrite: num(total.cache_write_input_tokens),
+        total: num(total.total_tokens),
+      };
+    } else if (payload.type === "function_call") {
+      trackTool(reading, payload.call_id, payload.name, true);
+    } else if (payload.type === "function_call_output") {
+      trackTool(reading, payload.call_id, null, false);
+    }
+    return;
+  }
+
+  if (agent === "dsh") {
+    // Approval asks and decisions both carry an id, so an ask with no matching
+    // decision is a request genuinely still waiting — not a guess about what a
+    // tool happens to be doing.
+    const data = event.data ?? {};
+    if (event.type === "approval/asked") {
+      if (typeof data.id === "string") {
+        reading.asked.add(data.id);
+        reading.approvalTools.set(data.id, typeof data.toolName === "string" ? data.toolName : null);
+      }
+    } else if (event.type === "approval/decided") {
+      if (typeof data.id === "string") reading.decided.add(data.id);
+    }
+  }
+}
+
+function summariseReading(reading) {
+  const waiting = [...reading.asked].filter((id) => !reading.decided.has(id));
+  if (waiting.length > 0) {
+    return {
+      tokens: reading.tokens,
+      pending: { kind: "approval", label: reading.approvalTools.get(waiting[0]) ?? null, count: waiting.length },
+    };
+  }
+  if (reading.tools.size > 0) {
+    return {
+      tokens: reading.tokens,
+      pending: { kind: "tool", label: [...reading.tools.values()][0] ?? null, count: reading.tools.size },
+    };
+  }
+  return { tokens: reading.tokens, pending: null };
+}
+
+/** Read whatever this card's store already holds about tokens and waiting work. */
+async function readStore(card) {
+  if (typeof card.file !== "string" || card.file === "") return null;
+  let reading = storeReadings.get(card.file);
+  if (reading === undefined) {
+    if (storeReadings.size >= STORE_READINGS_MAX) storeReadings.clear();
+    reading = freshReading();
+    storeReadings.set(card.file, reading);
+  }
+
+  let stats;
+  try {
+    stats = await stat(card.file);
+  } catch {
+    return null;
+  }
+
+  if (card.agent === "dsh") {
+    const stamp = `${stats.mtimeMs}:${stats.size}`;
+    if (reading.stamped !== stamp) {
+      try {
+        const text = decodeZstdFrames(await readFile(card.file)).toString("utf8");
+        for (const event of parseJsonl(text)) readEvent("dsh", event, reading);
+        reading.stamped = stamp;
+      } catch (error) {
+        // A store caught mid-write can fail to decode, and the next poll
+        // retries. Anything else is a bug and must surface rather than be
+        // swallowed — this catch once hid a Buffer/String mix-up.
+        if (error?.code !== "Z_DATA_ERROR" && !(error instanceof SyntaxError)) throw error;
+      }
+    }
+    return summariseReading(reading);
+  }
+
+  if (stats.size < reading.offset) {
+    reading = freshReading();
+    storeReadings.set(card.file, reading);
+  }
+
+  while (reading.offset < stats.size) {
+    const length = Math.min(stats.size - reading.offset, STORE_READ_CHUNK);
+    let handle = null;
+    try {
+      handle = await open(card.file, "r");
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, reading.offset);
+      if (bytesRead <= 0) break;
+      reading.offset += bytesRead;
+
+      const text = reading.carry + buffer.subarray(0, bytesRead).toString("utf8");
+      const lines = text.split("\n");
+      // Whatever follows the last newline is a half-written line: keep it until
+      // the rest of it arrives.
+      reading.carry = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed === "") continue;
+        let event;
+        try {
+          event = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        readEvent(card.agent, event, reading);
+      }
+    } catch {
+      break;
+    } finally {
+      if (handle !== null) await handle.close().catch(() => {});
+    }
+  }
+
+  return summariseReading(reading);
+}
+
 async function derivePreview(card) {
   // A source that owns a non-file store answers the preview from its own query,
   // and is invalidated by the session's own updated-at rather than an mtime.
@@ -2274,6 +2524,9 @@ async function dispatch(payload, ctx) {
     const previews = await mapLimit(running.slice(0, MAX_PREVIEWS), 4, async (card) => {
       const hook = hooks.get(`${card.agent}:${card.sessionId}`);
       const derived = await derivePreview(card);
+      // Read in parallel: both walk the same store tail but answer different
+      // questions, and the reading is cached on a byte offset between polls.
+      const reading = await readStore(card);
       return {
         key: card.key,
         agent: card.agent,
@@ -2291,6 +2544,12 @@ async function dispatch(payload, ctx) {
         at: toMs(hook?.at) ?? derived.at,
         source: hook === undefined ? "store" : "hook",
         surfaceId: card.live?.surfaceId ?? null,
+        // Live detail: how long it has been up, what it has spent, what it waits on.
+        pid: card.live?.pid ?? null,
+        startedAt: card.process?.startedAt ?? null,
+        elapsedMs: card.process?.startedAt == null ? null : Date.now() - card.process.startedAt,
+        tokens: reading?.tokens ?? null,
+        pending: reading?.pending ?? null,
       };
     });
 

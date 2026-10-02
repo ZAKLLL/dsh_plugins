@@ -79,7 +79,9 @@ const React = {
   useState(initial) {
     const cell = useCell();
     if (!("value" in cell)) {
-      const seeded = stateSeeds !== null && typeof initial === "string" ? stateSeeds.get(initial) : undefined;
+      // Keyed by String(initial) so a null-initial state (the live tile selection)
+      // is reachable as well as a string one (the sidebar tab's mode).
+      const seeded = stateSeeds !== null ? stateSeeds.get(String(initial)) : undefined;
       cell.value = seeded !== undefined ? seeded : typeof initial === "function" ? initial() : initial;
     }
     return [
@@ -189,6 +191,11 @@ const FAKE_LIVE = {
   phase: "working",
   at: Date.now(),
   source: "store",
+  pid: 4242,
+  startedAt: Date.now() - 5 * 60 * 1000,
+  elapsedMs: 5 * 60 * 1000,
+  tokens: { input: 4719, output: 235, cacheRead: 1024, cacheWrite: 0, total: 5978 },
+  pending: { kind: "approval", label: "plugin_manager", count: 1 },
 };
 
 const stubFetch = async (url, init) => {
@@ -433,7 +440,12 @@ for (const node of flatten(second.tree)) {
 // The preview payload is synthetic so this asserts the same thing everywhere.
 // Hook cells are cleared first: a seed only applies to a state's first render.
 cells.clear();
-const liveSeeds = new Map([["sessions", "live"]]);
+const liveSeeds = new Map([
+  ["sessions", "live"],
+  // Seed the tile selection too: a click cannot be dispatched here, and the
+  // detail panel is only reachable through it.
+  ["null", FAKE_LIVE.key],
+]);
 let live = render(SidebarTab, { sessionId: "selftest", inputActions: null }, liveSeeds);
 for (const effect of live.effects) {
   const cleanup = effect();
@@ -445,25 +457,51 @@ for (let attempt = 0; attempt < 20; attempt += 1) {
   if (hostElements(live.tree, "sh-lp-card").length > 0) break;
 }
 
-const cards = hostElements(live.tree, "sh-lp-card");
-assert.equal(cards.length, 1, "the seeded preview must render one live card");
-assert.equal(cards[0].props.draggable, true, "a live card must drag into the composer");
-assert.equal(typeof cards[0].props.onDragStart, "function");
-assert.equal(typeof cards[0].props.onPointerEnter, "function", "a live card must prefetch on hover");
+const tiles = hostElements(live.tree, "sh-tile");
+assert.equal(tiles.length, 1, "the seeded preview must render one tile");
+assert.equal(tiles[0].props.draggable, true, "a tile must drag into the composer");
+assert.equal(typeof tiles[0].props.onDragStart, "function");
+assert.equal(typeof tiles[0].props.onPointerEnter, "function", "a tile must prefetch on hover");
+assert.equal(tiles[0].props.role, "button", "a tile must be clickable and focusable");
+assert.ok(
+  flatten(tiles[0]).some((node) => node.props?.className === "sh-tile-badge sh-tile-badge-wait"),
+  "a session waiting on approval must be badged on its tile",
+);
+
+// The detail panel is what a click opens; the selection is seeded above.
+const detail = hostElements(live.tree, "sh-lp-card");
+assert.equal(detail.length, 1, "selecting a tile must render its detail panel");
+assert.equal(detail[0].props.draggable, true, "the detail panel must drag too");
 
 const liveActions = hostElements(live.tree, "sh-lp-actions");
-assert.equal(liveActions.length, 1, "the live card must carry its own action cluster");
+assert.equal(liveActions.length, 1, "the detail panel must carry its own action cluster");
 const liveButtons = flatten(liveActions[0]).filter((node) => node.type === "button");
-assert.equal(liveButtons.length, 2, "the live card must offer continue and resume");
+assert.equal(liveButtons.length, 3, "the detail panel must offer continue, resume and close");
 for (const button of liveButtons) assert.equal(typeof button.props.title, "string", "each action needs a tooltip");
 
-// The reading itself, and where it came from, must both be on the card.
+// Every fact the detail panel exists for must actually be on it.
+const lineText = hostElements(live.tree, "sh-lp-v").map(textOf);
+const joined = lineText.join(" | ");
+assert.ok(joined.includes(FAKE_LIVE.cwd), `the detail must show the directory: ${joined}`);
+assert.ok(/5m/.test(joined), `the detail must show how long it has been up: ${joined}`);
+for (const label of ["tokIn", "tokOut", "tokTotal"]) {
+  assert.ok(joined.includes(label), `the detail must break the token total down: ${joined}`);
+}
+assert.ok(joined.includes("6.0k"), `the detail must show the total it spent: ${joined}`);
+assert.ok(joined.includes("plugin_manager"), `the detail must name what it waits on: ${joined}`);
+assert.deepEqual(
+  lineText.slice(-2),
+  [FAKE_LIVE.input, FAKE_LIVE.output],
+  "the detail must still show the input and the latest output",
+);
 const kinds = hostElements(live.tree, "sh-lp-kind").map(textOf);
-assert.equal(kinds.length, 1, "the live card must state its source");
+assert.equal(kinds.length, 1, "the detail must state its source");
 assert.ok(kinds[0].length > 0, `the source line must not be empty: ${JSON.stringify(kinds[0])}`);
-const values = hostElements(live.tree, "sh-lp-v").map(textOf);
-assert.deepEqual(values, [FAKE_LIVE.input, FAKE_LIVE.output], "the card must show the input and the latest output");
-console.log(`live: 1 card, ${liveButtons.length} actions, drag enabled, source stated`);
+assert.ok(
+  flatten(detail[0]).some((node) => typeof node.props?.className === "string" && node.props.className.includes("sh-lp-mono")),
+  "the directory must be rendered as a path, not prose",
+);
+console.log(`live: 1 tile, 1 detail panel, ${liveButtons.length} actions, drag enabled, source stated`);
 
 for (const cleanup of cleanups) cleanup();
 globalThis.fetch = realFetch;
