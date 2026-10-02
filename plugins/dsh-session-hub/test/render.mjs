@@ -411,7 +411,7 @@ assert.ok(groupActions.length > 0, "every project header must carry its controls
 assert.equal(groupActions.length, groups.length, "one control cluster per project header");
 for (const cluster of groupActions) {
   const controls = flatten(cluster).filter((node) => node.type === "button");
-  assert.equal(controls.length, 3, "a project header must offer new-session, pin and delete");
+  assert.equal(controls.length, 4, "a project header must offer editor, new-session, pin and delete");
   assert.ok(
     controls.every((control) => typeof control.props.title === "string" && control.props.title !== ""),
     "every project control needs a tooltip",

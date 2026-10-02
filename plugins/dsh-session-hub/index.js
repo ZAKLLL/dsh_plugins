@@ -212,6 +212,33 @@ async function cwdOf(pid) {
 }
 
 /**
+ * The `code` CLI that hands a directory to VS Code.
+ *
+ * PATH first — that is where a person puts it — then the standard locations,
+ * because a Host started from Finder does not inherit a login shell's PATH.
+ */
+let editorCliPath;
+function resolveEditorCli() {
+  if (editorCliPath !== undefined) return editorCliPath;
+  const candidates = [];
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (dir !== "") candidates.push(join(dir, "code"));
+  }
+  candidates.push("/usr/local/bin/code", "/opt/homebrew/bin/code");
+  candidates.push("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
+  editorCliPath =
+    candidates.find((candidate) => {
+      try {
+        accessSync(candidate, fsConstants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }) ?? null;
+  return editorCliPath;
+}
+
+/**
  * Whether a process name *names* this agent, rather than merely containing it.
  *
  * The delimiters matter: a plain `includes("pi")` would claim `apiserver`, and
@@ -1330,7 +1357,7 @@ function hubState() {
  * @param ctx - The Host plugin context of the generation that is live.
  */
 /** Every operation this Host answers; also reported when an unknown one arrives. */
-const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "continue", "reference", "open", "spawn", "delete", "delete-many"];
+const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many"];
 
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
@@ -1526,6 +1553,25 @@ async function dispatch(payload, ctx) {
       sessions: previews.filter(Boolean),
       hookPath: hooksPath(),
     };
+  }
+
+  /**
+   * Open a project directory in VS Code.
+   *
+   * A plain detached spawn, not a terminal launch: `code` hands the path to a
+   * running window, so there is no shell and no window left behind it.
+   */
+  if (op === "vscode") {
+    const cwd = typeof payload?.cwd === "string" && payload.cwd.startsWith("/") ? payload.cwd : null;
+    if (cwd === null) return { ok: false, error: "vscode needs an absolute cwd" };
+    const cli = resolveEditorCli();
+    if (cli === null) return { ok: false, error: "the code CLI was not found" };
+    try {
+      spawn(cli, [cwd], { detached: true, stdio: "ignore" }).unref();
+      return { ok: true, cwd, editor: "code", cli };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
   }
 
   /**

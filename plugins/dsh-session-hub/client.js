@@ -108,6 +108,8 @@ window.__ModuleLoader__.load({
       liveIdle: "No agent is running right now",
       reference: "Reference this session in the draft",
       focusIn: "Jump to the {terminal} window it is already running in",
+      openInVscode: "Open this project in VS Code",
+      openedEditor: "Opened in {editor}",
       readSession: "Read this conversation",
       loading: "Loading…",
       you: "You",
@@ -216,6 +218,8 @@ window.__ModuleLoader__.load({
       liveIdle: "目前没有 agent 在运行",
       reference: "把这条会话引用进草稿",
       focusIn: "跳到它正在运行的 {terminal} 窗口",
+      openInVscode: "用 VS Code 打开这个项目",
+      openedEditor: "已在 {editor} 中打开",
       readSession: "阅读这条会话",
       loading: "加载中…",
       you: "你",
@@ -652,6 +656,16 @@ window.__ModuleLoader__.load({
         h("path", { d: "M8 2.6v7.1" }),
         h("path", { d: "M4.8 6.7 8 9.9l3.2-3.2" }),
         h("path", { d: "M2.9 13.3h10.2" }));
+    }
+
+    /** Angle brackets: the universal "open in an editor". */
+    function CodeIcon() {
+      return h("svg", {
+        viewBox: "0 0 16 16", width: 14, height: 14, fill: "none", stroke: "currentColor",
+        strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
+      },
+        h("path", { d: "M5.7 4.2 2.5 8l3.2 3.8" }),
+        h("path", { d: "M10.3 4.2 13.5 8l-3.2 3.8" }));
     }
 
     /**
@@ -1321,6 +1335,21 @@ window.__ModuleLoader__.load({
           [runningKeys],
         );
 
+        /** Hand this project's directory to VS Code. */
+        const onOpenVscode = React.useCallback(
+          async (bucket) => {
+            if (bucket.path === null || bucket.path === undefined) return;
+            try {
+              const result = await hub("vscode", { cwd: bucket.path });
+              if (result.ok !== true) throw new Error(result.error ?? "vscode failed");
+              say(t("openedEditor", { editor: "VS Code" }));
+            } catch (caught) {
+              say(t("failed", { message: String(caught?.message ?? caught) }), true);
+            }
+          },
+          [],
+        );
+
         /** Only a project group has a directory to start a session in. */
         const onSpawnSession = React.useCallback((bucket) => {
           if (bucket.path === null || bucket.path === undefined) return;
@@ -1548,6 +1577,19 @@ window.__ModuleLoader__.load({
                             h(
                               "span",
                               { className: "sh-group-actions" },
+                              bucket.path !== null &&
+                                bucket.path !== undefined &&
+                                h(
+                                  "button",
+                                  {
+                                    type: "button",
+                                    className: "sh-icon-btn",
+                                    title: t("openInVscode"),
+                                    "aria-label": t("openInVscode"),
+                                    onClick: () => onOpenVscode(bucket),
+                                  },
+                                  h(CodeIcon),
+                                ),
                               bucket.path !== null &&
                                 bucket.path !== undefined &&
                                 h(
