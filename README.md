@@ -15,9 +15,12 @@ dsh_plugins/
 ├── dsh-session-hub/     # Session Hub 插件（index.js / client.js / locale / test）
 ├── .githooks/           # Git hooks（通过 core.hooksPath 生效）
 ├── .gitmessage          # 提交信息模板
+├── TODO.md              # 仓库级待办（含多插件结构重构计划）
 ├── LICENSE              # MIT
 └── .gitignore           # 忽略临时参考与运行期产物
 ```
+
+> 计划改为 `plugins/<插件名>/` 的多插件布局，见 [TODO.md](TODO.md)；当前仍在开发 `dsh-session-hub`，暂缓执行。
 
 - `.ref/`、`.research/`：从 DSH 应用包提取的运行时包与插件开发文档副本，仅作 API 参考，**不入库**，过期可直接删除后重新提取。
 - `.dsh-session-hub/`：Session Hub 插件在工作区落地的会话转录，**不入库**。
