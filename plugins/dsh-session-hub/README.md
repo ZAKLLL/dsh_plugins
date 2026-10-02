@@ -11,6 +11,43 @@
 
 ---
 
+## 架构：一个声明式 adapter 层
+
+宿主半边**不按 agent 分支**。`index.js` 里没有任何 `card.agent === "..."`，也没有 `AGENT_LABELS` / `AGENT_EXECUTABLES` / `SPAWN_COMMANDS` 这类平行表——**所有针对某一个 agent 的知识都在 `sources/<agent>.js` 里**，由一个声明式接口约束。
+
+```
+sources/
+├── adapter.js     # 契约本身：完整 typedef + defineAdapter() 加载时校验
+├── dsh.js         # Zstandard 帧存储、进程内注册表存活、审批配对
+├── claude.js      # ~/.claude/projects
+├── codex.js       # rollout + session_index.jsonl（删除时要一起摘）
+├── gemini.js      # $set 补丁流
+├── pi.js          # JSONL，头和 DSH 近乎同构
+└── opencode.js    # SQLite，自己实现 list/full/preview/remove
+```
+
+**接口是可执行的，不是注释**。`defineAdapter()` 在**模块加载时**校验必填项（`id` / `label` / `executables` / `root` / `resumeCommand`；`build` 与 `list` 必须二选一；`build` 必须有 `match`），所以「接口没接好」在加载时就报错，而不是等到第一次请求才静默少一半功能。
+
+每个 adapter 自己声明方言差异：
+
+| 声明 | 含义 | 谁在用 |
+| --- | --- | --- |
+| `build` / `match` / `prefix` | 走目录的源：怎么找、怎么增量读、怎么建卡片 | 5 家 |
+| `list` / `full` / `preview` / `remove` | **不是「一堆文件」的源**自己答全套 | opencode |
+| `storeKind` | `"jsonl"`（可按字节偏移增量读）/ `"frames"`（zstd 帧，只能整份解码）/ `null` | dsh 是 frames |
+| `readPreview` | 把 store 尾部折成实时预览的 IN / OUT | 6 家 |
+| `readStoreEvent` | 把 store 事件折成 token 总量与等待集合 | claude / codex / pi / dsh |
+| `deletePlan` | 删什么、是否目录、删完还要做什么 | dsh 删整个目录；codex 还要摘索引 |
+| `liveness` | 存活从哪来：`"registry"`（进程内注册表）还是 `"process"`（进程表） | dsh 是 registry |
+| `clientOwned` | 打开会话由客户端负责，而不是拉起终端 | dsh |
+| `spawnCommand` | 起新会话的命令；`null` = 本插件起不了 | dsh 是 null |
+
+**加一个 agent = 新增一个 `sources/<agent>.js` 并在 `SOURCES` 里登记一行**，不需要改 `index.js` 的任何逻辑。
+
+> 这次重构是分两步做的，因为「接口没接好」的错误很容易被静默吞掉：第一步抽出 `shared.js`（15 个方言无关助手，index.js 净减 176 行），第二步搬 6 个 adapter 并把 index.js 的去分支化做完（2694 → 1574 行）。第二步真的踩到了这个坑——`sources/codex.js` 用了 `readFileSync` 却没导入，而它的 `try/catch` 把 `ReferenceError` 吞了，表现只是「标题静默回落成 (untitled)」。为此加了一个**静态检查**：把每个模块用到的函数名与它的导入清单比对，专门抓这类遗漏。
+
+---
+
 ## 它从哪里收集
 
 | agent | 存在哪 | 格式 |

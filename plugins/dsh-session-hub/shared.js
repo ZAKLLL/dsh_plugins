@@ -9,7 +9,8 @@
  */
 
 import zlib from "node:zlib";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
+import { homedir } from "node:os";
 
 /** A session whose store holds no human text at all. */
 export const UNTITLED = "(untitled)";
@@ -222,3 +223,28 @@ export function blocksOf(content) {
 }
 
 /** Add one turn's usage onto the running total. */
+
+export const home = () => homedir();
+
+export const dshHome = () => process.env.DSH_HOME || join(home(), ".dsh");
+
+export function accumulate(reading, parts) {
+  const current = reading.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  current.input += num(parts.input);
+  current.output += num(parts.output);
+  current.cacheRead += num(parts.cacheRead);
+  current.cacheWrite += num(parts.cacheWrite);
+  current.total = current.input + current.output + current.cacheRead + current.cacheWrite;
+  reading.tokens = current;
+}
+
+/** Track one tool call by id, so a call that never finished stays visible. */
+
+/** Track one tool call by id, so a call that never finished stays visible. */
+export function trackTool(reading, id, name, present) {
+  if (typeof id !== "string" || id === "") return;
+  if (present) reading.tools.set(id, typeof name === "string" ? name : null);
+  else reading.tools.delete(id);
+}
+
+/** Fold one store event into a reading. Each dialect reports different things. */

@@ -135,6 +135,13 @@
  * @property {string|null} spawnCommand Shell command that starts a fresh
  *   interactive session, or null when the plugin cannot start this agent (DSH
  *   sessions are created through the DSH workspace registry instead).
+ * @property {boolean} [clientOwned] True when *opening* an existing session is
+ *   the client's job rather than a terminal launch — DSH opens in the DSH UI.
+ * @property {"registry"|"process"} [liveness] Where "is this running" comes
+ *   from. `"registry"` reads the in-process agent registry, which is the only
+ *   correct answer for an agent that IS this process; `"process"` (the default)
+ *   reads the process table, which is the only thing that sees an agent started
+ *   straight from a terminal.
  * @property {(sessionId: string) => string|null} resumeCommand
  *
  * // --- inventory: one directory of session files ----------------------

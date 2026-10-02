@@ -23,9 +23,18 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import dshSource from "./sources/dsh.js";
+import claudeSource from "./sources/claude.js";
+import codexSource from "./sources/codex.js";
+import geminiSource from "./sources/gemini.js";
+import piSource from "./sources/pi.js";
+import opencodeSource from "./sources/opencode.js";
 import {
   UNTITLED,
+  accumulate,
   blocksOf,
+  dshHome,
+  home,
   decodeZstdFrames,
   looksInjected,
   num,
@@ -34,6 +43,7 @@ import {
   projectOf,
   textOf,
   toMs,
+  trackTool,
 } from "./shared.js";
 import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -49,23 +59,11 @@ export const inject = ["connection"];
 /** The one exact Fetch route the client talks to; every call is a POST with an `op`. */
 const ROUTE = "/api/session-hub";
 
-const AGENT_LABELS = {
-  dsh: "DSH",
-  claude: "Claude Code",
-  codex: "Codex",
-  gemini: "Gemini CLI",
-  pi: "pi",
-  opencode: "opencode",
-};
-
 const MAX_BATCH_DELETE = 2000;
 
 /* ------------------------------------------------------------------ *
  * Small helpers
  * ------------------------------------------------------------------ */
-
-const home = () => homedir();
-const dshHome = () => process.env.DSH_HOME || join(home(), ".dsh");
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -172,371 +170,6 @@ async function readPrefix(file, { start, max, complete }) {
   }
 }
 
-async function buildDsh(file, stats) {
-  const text = decodeZstdFrames(await readFile(file)).toString("utf8");
-  const events = parseJsonl(text);
-
-  const header = events.find((event) => event.type === "session") ?? {};
-  // DSH titles are log-backed and "newest wins": a `provider` (LLM) title can
-  // replace the `fallback`, and a `user` rename supersedes both. So the last
-  // title event is the current one — except a fallback that merely echoed an
-  // injected prompt, which is dropped in favour of this plugin's own reading.
-  const titleEvents = events.filter(
-    (event) => event.type === "session/title" && typeof event.data?.title === "string" && event.data.title !== "",
-  );
-  const dshTitle = titleEvents.length > 0 ? titleEvents[titleEvents.length - 1].data.title : "";
-
-  const lines = [];
-  let messages = 0;
-  let assistantTitle = "";
-  for (const event of events) {
-    if (event.type === "user/message") {
-      if (event.data?.role !== "user" && event.data?.source?.kind !== "user") continue;
-      const body = textOf(event.data?.content);
-      if (body === "" || looksInjected(body)) continue;
-      messages += 1;
-      lines.push("## User", "", body, "");
-    } else if (event.type === "assistant/message") {
-      const body = textOf(event.data?.message?.content);
-      if (body === "") continue;
-      if (assistantTitle === "") assistantTitle = body;
-      messages += 1;
-      lines.push("## Assistant", "", body, "");
-    } else if (event.type === "tool/call") {
-      lines.push(`> tool: \`${event.data?.name ?? "tool"}\``, "");
-    }
-  }
-
-  /**
-   * A subagent session's first "human" message is the prompt its parent
-   * delegated to it — instructions, not conversation. Titling from it produces
-   * rows like "You are researching the DeepSeek…", so those sessions fall back
-   * to what the subagent actually said it would do.
-   */
-  const isSubagent = header.origin === "subagent" || (Number(header.delegationDepth) || 0) > 0;
-
-  const recorded = isSubagent || looksInjected(dshTitle) ? "" : oneLine(dshTitle, 140);
-  const cwd = typeof header.cwd === "string" ? header.cwd : null;
-  const createdAt = toMs(header.createdAt) ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
-  const human = isSubagent
-    ? undefined
-    : events.find((event) => event.type === "user/message" && !looksInjected(textOf(event.data?.content)));
-
-  return {
-    card: {
-      key: `dsh:${file}`,
-      agent: "dsh",
-      agentLabel: AGENT_LABELS.dsh,
-      sessionId: typeof header.id === "string" ? header.id : basename(dirname(file)),
-      title: recorded || oneLine(textOf(human?.data?.content), 140) || oneLine(assistantTitle, 140) || UNTITLED,
-      cwd,
-      project: projectOf(cwd),
-      createdAt,
-      updatedAt: Math.round(stats.mtimeMs ?? createdAt ?? 0) || null,
-      bytes: stats.size ?? 0,
-      messages,
-      partial: false,
-      subagent: isSubagent,
-      parentSessionId: typeof header.parentSession === "string" ? header.parentSession : null,
-      depth: Number(header.delegationDepth) || 0,
-      file,
-      resumeCommand: null,
-    },
-    body: lines.join("\n").trimEnd(),
-    meta: { agentPreset: header.agentPreset ?? null, formatVersion: header.version ?? null },
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * Source: Claude Code
- * ------------------------------------------------------------------ */
-
-/** Claude's first human message can carry a platform wrapper; keep the question. */
-function claudeUserText(text) {
-  if (typeof text !== "string") return "";
-  const query = /<userQuery>([\s\S]*?)<\/userQuery>/.exec(text);
-  const body = query ? query[1] : text.replace(/<bizContext>[\s\S]*?<\/bizContext>/g, "");
-  return body.trim();
-}
-
-function buildClaude(file, stats, events, truncated) {
-  let sessionId = null;
-  let cwd = null;
-  let title = "";
-  let assistantTitle = "";
-  let createdAt = null;
-  let messages = 0;
-  const lines = [];
-
-  for (const event of events) {
-    if (sessionId === null && typeof event.sessionId === "string") sessionId = event.sessionId;
-    if (cwd === null && typeof event.cwd === "string") cwd = event.cwd;
-    const at = toMs(event.timestamp);
-    if (at !== null && (createdAt === null || at < createdAt)) createdAt = at;
-
-    if (event.type === "ai-title") {
-      // Claude regenerates its own title as the conversation evolves, so the
-      // newest one wins — taking the first would freeze an early guess.
-      const candidate = event.aiTitle ?? event.title;
-      if (typeof candidate === "string" && candidate !== "") title = oneLine(candidate, 140);
-      continue;
-    }
-    // `last-prompt` repeats the user's latest prompt, not a title.
-    if (event.type === "last-prompt") continue;
-    if (event.type === "user") {
-      const blocks = event.message?.content;
-      if (Array.isArray(blocks) && blocks.some((block) => block?.type === "tool_result")) continue;
-      const body = claudeUserText(textOf(blocks));
-      if (body === "" || looksInjected(body)) continue;
-      messages += 1;
-      lines.push("## User", "", body, "");
-    } else if (event.type === "assistant") {
-      const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
-      const body = textOf(blocks);
-      const tools = blocks.filter((block) => block?.type === "tool_use").map((block) => block.name);
-      if (body === "" && tools.length === 0) continue;
-      if (assistantTitle === "" && body !== "") assistantTitle = body;
-      messages += 1;
-      if (body !== "") lines.push("## Assistant", "", body, "");
-      for (const tool of tools) lines.push(`> tool: \`${tool}\``, "");
-    }
-  }
-
-  if (sessionId === null) sessionId = basename(file, ".jsonl");
-  if (title === "") {
-    const firstUser = events.find((event) => {
-      if (event.type !== "user") return false;
-      const body = claudeUserText(textOf(event.message?.content));
-      return body !== "" && !looksInjected(body);
-    });
-    title = oneLine(claudeUserText(textOf(firstUser?.message?.content)), 140);
-  }
-  if (cwd === null) cwd = claudeProjectPath(file);
-
-  const created = createdAt ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
-  return {
-    card: {
-      key: `claude:${file}`,
-      agent: "claude",
-      agentLabel: AGENT_LABELS.claude,
-      sessionId,
-      title: title || oneLine(assistantTitle, 140) || UNTITLED,
-      cwd,
-      project: projectOf(cwd),
-      createdAt: created,
-      updatedAt: Math.round(stats.mtimeMs ?? created ?? 0) || null,
-      bytes: stats.size ?? 0,
-      messages,
-      partial: truncated,
-      file,
-      resumeCommand: sessionId ? `claude --resume ${sessionId}` : null,
-    },
-    body: lines.join("\n").trimEnd(),
-    meta: {},
-  };
-}
-
-/**
- * Claude's project directory name is the project path with separators replaced
- * by `-`; it is only a fallback for when no event carried a `cwd`.
- */
-function claudeProjectPath(file) {
-  const slug = basename(dirname(file));
-  if (!slug.startsWith("-")) return null;
-  const guess = slug.replace(/-/g, "/");
-  return guess.startsWith("/") ? guess : null;
-}
-
-/* ------------------------------------------------------------------ *
- * Source: Codex CLI
- * ------------------------------------------------------------------ */
-
-/**
- * Codex writes its model-generated thread names to its own index rather than
- * into the rollout file:
- *
- *   ~/.codex/session_index.jsonl
- *   {"id":"<session id>","thread_name":"编写 SkillStudio 使用说明","updated_at":"…"}
- *
- * This is the closest thing Codex has to an AI title, and it beats anything
- * derived from the first message, so it is read once per scan.
- */
-const codexIndex = { at: 0, value: null };
-
-function codexThreadNames() {
-  const now = Date.now();
-  if (codexIndex.value !== null && now - codexIndex.at < 5000) return codexIndex.value;
-
-  const names = new Map();
-  try {
-    const text = readFileSync(join(home(), ".codex", "session_index.jsonl"), "utf8");
-    for (const line of text.split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        const row = JSON.parse(line);
-        if (typeof row?.id === "string" && typeof row?.thread_name === "string" && row.thread_name !== "") {
-          names.set(row.id, row.thread_name);
-        }
-      } catch {
-        /* A partially written tail line is expected. */
-      }
-    }
-  } catch {
-    /* Codex may not be installed, or may keep no index. */
-  }
-
-  codexIndex.value = names;
-  codexIndex.at = now;
-  return names;
-}
-
-function codexUserText(payload) {
-  const body = textOf(payload?.content);
-  return looksInjected(body) ? "" : body;
-}
-
-function buildCodex(file, stats, events, truncated) {
-  const meta = events.find((event) => event.type === "session_meta")?.payload ?? {};
-  const sessionId = meta.session_id ?? meta.id ?? basename(file, ".jsonl");
-  const cwd = typeof meta.cwd === "string" ? meta.cwd : null;
-  const created = toMs(meta.timestamp) ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
-
-  const lines = [];
-  let title = "";
-  let assistantTitle = "";
-  let messages = 0;
-
-  for (const event of events) {
-    if (event.type !== "response_item") continue;
-    const payload = event.payload ?? {};
-    if (payload.type !== "message") continue;
-
-    if (payload.role === "user") {
-      const body = codexUserText(payload);
-      if (body === "") continue;
-      messages += 1;
-      if (title === "") title = oneLine(body, 140);
-      lines.push("## User", "", body, "");
-    } else if (payload.role === "assistant") {
-      const body = textOf(payload.content);
-      if (body === "") continue;
-      if (assistantTitle === "") assistantTitle = body;
-      messages += 1;
-      lines.push("## Assistant", "", body, "");
-    }
-  }
-
-  return {
-    card: {
-      key: `codex:${file}`,
-      agent: "codex",
-      agentLabel: AGENT_LABELS.codex,
-      sessionId,
-      title: codexThreadNames().get(sessionId) ?? (title || oneLine(assistantTitle, 140) || UNTITLED),
-      cwd,
-      project: projectOf(cwd),
-      createdAt: created,
-      updatedAt: Math.round(stats.mtimeMs ?? created ?? 0) || null,
-      bytes: stats.size ?? 0,
-      messages,
-      partial: truncated,
-      file,
-      resumeCommand: sessionId ? `codex resume ${sessionId}` : null,
-    },
-    body: lines.join("\n").trimEnd(),
-    meta: { cliVersion: meta.cli_version ?? null, originator: meta.originator ?? null },
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * Source: Gemini CLI
- * ------------------------------------------------------------------ */
-
-/**
- * A Gemini chat file interleaves patch records: an initial `$set.messages`, then
- * one standalone message object per later turn, with small `$set` patches in
- * between. A prefix therefore yields the opening messages, and a full read
- * yields all of them.
- */
-function buildGemini(file, stats, events, truncated) {
-  const header = events[0] ?? {};
-  const sessionId = header.sessionId ?? basename(file, ".jsonl");
-  const created = toMs(header.startTime) ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
-
-  // A prefix cannot see the consolidating patch at the tail; a full read can.
-  const messages = geminiMessageList(events, truncated);
-
-  const lines = [];
-  let title = "";
-  let assistantTitle = "";
-  let count = 0;
-  for (const message of messages) {
-    const body = textOf(message?.content)
-      .replace(/<session_context>[\s\S]*?<\/session_context>/g, "")
-      .trim();
-    if (body === "") continue;
-    const isHuman = message?.type === "user";
-    count += 1;
-    if (isHuman) {
-      if (title === "") title = oneLine(body, 140);
-    } else if (assistantTitle === "") {
-      assistantTitle = body;
-    }
-    lines.push(isHuman ? "## User" : "## Assistant", "", body, "");
-  }
-
-  const cwd = geminiProjectPath(dirname(dirname(file)));
-  return {
-    card: {
-      key: `gemini:${file}`,
-      agent: "gemini",
-      agentLabel: AGENT_LABELS.gemini,
-      sessionId,
-      title: title || oneLine(assistantTitle, 140) || UNTITLED,
-      cwd,
-      project: projectOf(cwd),
-      createdAt: created,
-      updatedAt: toMs(header.lastUpdated) ?? (Math.round(stats.mtimeMs ?? created ?? 0) || null),
-      bytes: stats.size ?? 0,
-      messages: count,
-      partial: truncated,
-      file,
-      resumeCommand: sessionId ? `gemini --resume ${sessionId}` : null,
-    },
-    body: lines.join("\n").trimEnd(),
-    meta: {},
-  };
-}
-
-/**
- * Gemini records the project root as the directory the chat file's parent is
- * named after, and mirrors it in a `.project_root` file.
- */
-function geminiProjectPath(sessionDir) {
-  for (const candidate of [`${sessionDir}/.project_root`, `${dirname(sessionDir)}/.project_root`]) {
-    try {
-      const text = readFileSync(candidate, "utf8").trim();
-      if (text !== "") return text;
-    } catch {
-      /* Optional file. */
-    }
-  }
-  return null;
-}
-
-/* ------------------------------------------------------------------ *
- * Live state — the DSH registry, the process table, and cmux's hook records
- * ------------------------------------------------------------------ */
-
-/**
- * Which agent a live process is, by its executable name.
- *
- * The process table is the primary liveness source because most agents are
- * started straight from a terminal, with nothing cooperating. cmux's hook
- * records only ever see the agents that cmux launched, so they are an
- * enrichment rather than the foundation.
- */
-const AGENT_EXECUTABLES = ["claude", "codex", "gemini", "pi", "opencode"];
 
 const PROCESS_TTL_MS = 2000;
 const processCache = { at: 0, value: [] };
@@ -640,7 +273,9 @@ async function scanAgentProcesses() {
       // a later argument that merely mentions an agent name is not a match.
       const argv = args.split(/\s+/).filter(Boolean);
       const names = [basename(match[3]), argv[0] === undefined ? null : basename(argv[0])];
-      const agent = AGENT_EXECUTABLES.find((name) => names.some((candidate) => candidate !== null && namesAgent(candidate, name)));
+      const agent = SOURCES.find((source) =>
+        source.executables.some((name) => names.some((candidate) => candidate !== null && namesAgent(candidate, name))),
+      )?.id;
       if (agent === undefined || !Number.isInteger(pid) || pid <= 0) continue;
 
       found.push({
@@ -808,13 +443,15 @@ async function readCmuxSessions(force) {
  * @returns {{ running: boolean, source: string|null, lifecycle: string|null, surfaceId?: string|null, launchArguments?: string[]|null }}
  */
 function liveOf(card, cmuxRecords, ctx) {
-  if (card.agent === "dsh") {
+  // An agent that runs inside this process reports its own status; one that runs
+  // as a separate program has to be found in the process table.
+  if (adapterOf(card.agent)?.liveness === "registry") {
     // `ctx.get` is the optional-service lookup the runtime itself uses, so an
     // absent registry degrades to "unknown" instead of throwing.
     const registry = ctx?.get?.("agents");
     const agent = registry?.get?.(card.sessionId);
     const status = typeof agent?.status === "string" ? agent.status : null;
-    return { running: status === "running", source: status === null ? null : "dsh", lifecycle: status };
+    return { running: status === "running", source: status === null ? null : card.agent, lifecycle: status };
   }
 
   // A live process is the strongest evidence, and the only one that sees an
@@ -881,360 +518,23 @@ async function refreshLive(ctx, cards, force = false) {
  * Source: pi
  * ------------------------------------------------------------------ */
 
-/**
- * pi keeps one JSONL file per session under
- * `~/.pi/agent/sessions/<workspace-slug>/<timestamp>_<id>.jsonl`.
- *
- * The header is close to DSH's (`type` / `id` / `timestamp` / `cwd`) and each
- * turn is a `message` row whose `message.content` is a block list — so this is
- * deliberately the same shape of parser rather than a new dialect.
- */
-function buildPi(file, stats, events, truncated) {
-  const header = events.find((event) => event.type === "session") ?? {};
-  const sessionId = typeof header.id === "string" ? header.id : basename(file, ".jsonl");
-  const cwd = typeof header.cwd === "string" ? header.cwd : null;
-  const created = toMs(header.timestamp) ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
-
-  const lines = [];
-  let title = "";
-  let assistantTitle = "";
-  let messages = 0;
-
-  for (const event of events) {
-    if (event.type !== "message") continue;
-    const payload = event.message ?? {};
-    const body = textOf(payload.content);
-    if (body === "") continue;
-    if (payload.role === "user") {
-      if (looksInjected(body)) continue;
-      messages += 1;
-      if (title === "") title = oneLine(body, 140);
-      lines.push("## User", "", body, "");
-    } else if (payload.role === "assistant") {
-      messages += 1;
-      if (assistantTitle === "") assistantTitle = body;
-      lines.push("## Assistant", "", body, "");
-    }
-  }
-
-  return {
-    card: {
-      key: `pi:${file}`,
-      agent: "pi",
-      agentLabel: AGENT_LABELS.pi,
-      sessionId,
-      title: title || oneLine(assistantTitle, 140) || UNTITLED,
-      cwd,
-      project: projectOf(cwd),
-      createdAt: created,
-      updatedAt: Math.round(stats.mtimeMs ?? created ?? 0) || null,
-      bytes: stats.size ?? 0,
-      messages,
-      partial: truncated,
-      subagent: false,
-      parentSessionId: null,
-      depth: 0,
-      file,
-      resumeCommand: sessionId ? `pi --session ${sessionId}` : null,
-    },
-    body: lines.join("\n").trimEnd(),
-    meta: { formatVersion: header.version ?? null },
-  };
-}
-
 /* ------------------------------------------------------------------ *
- * Source: opencode
+ * The agent registry
  * ------------------------------------------------------------------ */
 
 /**
- * opencode stores every session in one SQLite database rather than one file per
- * session, so this source does not fit the walk-a-directory shape at all: it
- * queries, reads and deletes by session id.
+ * Every agent this plugin knows, in the order the panel lists them.
  *
- * `node:sqlite` ships with the runtime, and is imported lazily so a machine
- * without opencode (or on an older Node) simply has no rows here.
+ * The machinery below never branches on an agent id: everything specific to a
+ * single agent lives behind these adapters (see `./sources/adapter.js`). Adding
+ * an agent means adding a module, not editing a branch here.
  */
-const OPENCODE_STAMP_TTL_MS = 2000;
+const SOURCES = [dshSource, claudeSource, codexSource, geminiSource, piSource, opencodeSource];
 
-function opencodeDbPath() {
-  return join(home(), ".local", "share", "opencode", "opencode.db");
+/** One adapter by id, or null when the id is unknown. */
+function adapterOf(id) {
+  return SOURCES.find((source) => source.id === id) ?? null;
 }
-
-/** Open the database, or return null when it is absent or unreadable. */
-async function openOpencode({ readOnly }) {
-  try {
-    const { DatabaseSync } = await import("node:sqlite");
-    return new DatabaseSync(opencodeDbPath(), { readOnly });
-  } catch {
-    return null;
-  }
-}
-
-/** The concatenated text of one message's `part` rows. */
-function opencodeText(parts) {
-  const chunks = [];
-  for (const row of parts) {
-    let data;
-    try {
-      data = JSON.parse(row.data);
-    } catch {
-      continue;
-    }
-    if (data?.type === "text" && typeof data.text === "string") chunks.push(data.text);
-  }
-  return chunks.join("\n").trim();
-}
-
-/** One card per session row, without reading any message bodies. */
-async function listOpencode() {
-  const db = await openOpencode({ readOnly: true });
-  if (db === null) return [];
-  try {
-    const rows = db
-      .prepare("select id, parent_id, directory, title, time_created, time_updated from session")
-      .all();
-    const counts = new Map(
-      db
-        .prepare("select session_id, count(*) as n from message group by session_id")
-        .all()
-        .map((row) => [row.session_id, row.n]),
-    );
-
-    return rows.map((row) => ({
-      card: {
-        key: `opencode:${row.id}`,
-        agent: "opencode",
-        agentLabel: AGENT_LABELS.opencode,
-        sessionId: row.id,
-        title: typeof row.title === "string" && row.title !== "" ? oneLine(row.title, 140) : UNTITLED,
-        cwd: typeof row.directory === "string" ? row.directory : null,
-        project: projectOf(row.directory),
-        createdAt: Number(row.time_created) || null,
-        updatedAt: Number(row.time_updated) || null,
-        // A row has no byte size; the panel renders that as "—".
-        bytes: 0,
-        messages: counts.get(row.id) ?? 0,
-        // Sessions are read completely in one query, so nothing is a prefix.
-        partial: false,
-        subagent: row.parent_id !== null,
-        parentSessionId: typeof row.parent_id === "string" ? row.parent_id : null,
-        depth: 0,
-        file: opencodeDbPath(),
-        resumeCommand: `opencode --session ${row.id}`,
-      },
-      body: "",
-      meta: {},
-    }));
-  } catch {
-    return [];
-  } finally {
-    db.close();
-  }
-}
-
-/** Read one opencode session in full, for the transcript and the preview. */
-async function readOpencode(sessionId, { withBody }) {
-  const db = await openOpencode({ readOnly: true });
-  if (db === null) return null;
-  try {
-    const row = db.prepare("select * from session where id = ?").get(sessionId);
-    if (row === undefined) return null;
-
-    const messages = db
-      .prepare("select id, data from message where session_id = ? order by time_created, id")
-      .all(sessionId);
-    const parts = db
-      .prepare("select message_id, data from part where session_id = ? order by time_created, id")
-      .all(sessionId);
-    const byMessage = new Map();
-    for (const part of parts) {
-      if (!byMessage.has(part.message_id)) byMessage.set(part.message_id, []);
-      byMessage.get(part.message_id).push(part);
-    }
-
-    let input = null;
-    let output = null;
-    const lines = [];
-    let count = 0;
-    for (const message of messages) {
-      let meta;
-      try {
-        meta = JSON.parse(message.data);
-      } catch {
-        continue;
-      }
-      const body = opencodeText(byMessage.get(message.id) ?? []);
-      if (body === "") continue;
-      if (meta?.role === "user") {
-        if (looksInjected(body)) continue;
-        count += 1;
-        if (input === null) input = body;
-        if (withBody) lines.push("## User", "", body, "");
-      } else if (meta?.role === "assistant") {
-        count += 1;
-        output = body;
-        if (withBody) lines.push("## Assistant", "", body, "");
-      }
-    }
-
-    const card = {
-      key: `opencode:${row.id}`,
-      agent: "opencode",
-      agentLabel: AGENT_LABELS.opencode,
-      sessionId: row.id,
-      title:
-        typeof row.title === "string" && row.title !== "" ? oneLine(row.title, 140) : oneLine(input ?? "", 140) || UNTITLED,
-      cwd: typeof row.directory === "string" ? row.directory : null,
-      project: projectOf(row.directory),
-      createdAt: Number(row.time_created) || null,
-      updatedAt: Number(row.time_updated) || null,
-      bytes: 0,
-      messages: count,
-      partial: false,
-      subagent: row.parent_id !== null,
-      parentSessionId: typeof row.parent_id === "string" ? row.parent_id : null,
-      depth: 0,
-      file: opencodeDbPath(),
-      resumeCommand: `opencode --session ${row.id}`,
-    };
-    return { card, body: lines.join("\n").trimEnd(), meta: { preview: { input, output } } };
-  } catch {
-    return null;
-  } finally {
-    db.close();
-  }
-}
-
-/**
- * Delete one opencode session.
- *
- * opencode owns this database and may be writing to it, so the caller's
- * running-process guard is what keeps this safe; the three deletes run in one
- * transaction so a failure cannot leave a session half-removed.
- */
-async function removeOpencode(sessionId) {
-  const db = await openOpencode({ readOnly: false });
-  if (db === null) throw new Error("opencode database is not readable");
-  try {
-    db.exec("begin");
-    db.prepare("delete from part where session_id = ?").run(sessionId);
-    db.prepare("delete from message where session_id = ?").run(sessionId);
-    db.prepare("delete from session where id = ?").run(sessionId);
-    db.exec("commit");
-  } catch (error) {
-    try {
-      db.exec("rollback");
-    } catch {
-      /* The transaction may already be gone. */
-    }
-    throw error;
-  } finally {
-    db.close();
-  }
-}
-
-const SOURCES = [
-  {
-    id: "dsh",
-    root: () => join(dshHome(), "sessions"),
-    match: (name) => name.endsWith(".jsonl.zstd"),
-    concurrency: 4,
-    build: buildDsh,
-  },
-  {
-    id: "claude",
-    root: () => join(home(), ".claude", "projects"),
-    match: (name) => name.endsWith(".jsonl"),
-    concurrency: 16,
-    prefix: { start: 131072, max: 2097152, complete: (events) => hasClaudeSignal(events) },
-    build: buildClaude,
-  },
-  {
-    id: "codex",
-    root: () => join(home(), ".codex", "sessions"),
-    match: (name) => name.endsWith(".jsonl"),
-    concurrency: 16,
-    prefix: { start: 131072, max: 2097152, complete: (events) => hasCodexSignal(events) },
-    build: buildCodex,
-  },
-  {
-    id: "gemini",
-    root: () => join(home(), ".gemini", "tmp"),
-    match: (name) => name.endsWith(".jsonl"),
-    concurrency: 8,
-    prefix: { start: 131072, max: 2097152, complete: (events) => hasGeminiSignal(events) },
-    build: buildGemini,
-  },
-  {
-    id: "pi",
-    root: () => join(home(), ".pi", "agent", "sessions"),
-    match: (name) => name.endsWith(".jsonl"),
-    concurrency: 8,
-    // `pi` records no title of its own, so the first human message is the gate.
-    prefix: { start: 131072, max: 2097152, complete: (events) => hasPiSignal(events) },
-    build: buildPi,
-  },
-  {
-    id: "opencode",
-    // A SQLite store: this source answers with its own list/read/delete rather
-    // than a directory walk, so it has no `match` or `build`.
-    root: () => dirname(opencodeDbPath()),
-    list: () => listOpencode(),
-    full: (sessionId) => readOpencode(sessionId, { withBody: true }),
-    preview: (card) => readOpencode(card.sessionId, { withBody: false }),
-    remove: (card) => removeOpencode(card.sessionId),
-  },
-];
-
-function hasPiSignal(events) {
-  for (const event of events) {
-    if (event.type !== "message" || event.message?.role !== "user") continue;
-    const body = textOf(event.message.content);
-    if (body !== "" && !looksInjected(body)) return true;
-  }
-  return false;
-}
-
-function hasClaudeSignal(events) {
-  let human = false;
-  let title = false;
-  for (const event of events) {
-    if (event.type === "ai-title") title = true;
-    if (event.type === "user") {
-      const body = claudeUserText(textOf(event.message?.content));
-      if (body !== "" && !looksInjected(body)) human = true;
-    }
-  }
-  return human || title;
-}
-
-function hasCodexSignal(events) {
-  let meta = false;
-  let human = false;
-  for (const event of events) {
-    if (event.type === "session_meta") meta = true;
-    if (event.type === "response_item" && event.payload?.type === "message" && event.payload?.role === "user") {
-      if (codexUserText(event.payload) !== "") human = true;
-    }
-  }
-  return meta && human;
-}
-
-function hasGeminiSignal(events) {
-  return events.length > 0 && geminiHasText(events);
-}
-
-function geminiHasText(events) {
-  for (const event of events) {
-    if (Array.isArray(event?.$set?.messages)) continue;
-    if (event?.type === "user" && textOf(event.content).replace(/<session_context>[\s\S]*?<\/session_context>/g, "").trim() !== "") {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** Parse a file into a normalized value, reading only as much as needed. */
 async function parseValue(source, file, stats, { full }) {
   if (source.prefix === undefined) {
     return source.build(file, stats);
@@ -1354,7 +654,7 @@ async function inventory(force, ctx) {
       cards.push(value.card);
       parsed += 1;
     }
-    sources.push({ id: source.id, label: AGENT_LABELS[source.id], root, total: values.length, parsed, skipped });
+    sources.push({ id: source.id, label: source.label, root, total: values.length, parsed, skipped });
   }
 
   cards.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
@@ -1428,7 +728,7 @@ async function dshWorkspaceOf(sessionId) {
   if (match === undefined) return null;
   const cached = cache.get(match)?.value;
   if (cached !== undefined) return cached.card.cwd ?? null;
-  const value = await cachedCard(SOURCES[0], match, false);
+  const value = await cachedCard(adapterOf("dsh"), match, false);
   return value?.card?.cwd ?? null;
 }
 
@@ -1471,62 +771,6 @@ function rootOf(agent) {
   return SOURCES.find((source) => source.id === agent)?.root() ?? null;
 }
 
-/**
- * Codex keeps its model-generated thread names in its own index, so removing a
- * rollout without removing its entry leaves the name behind for a session that
- * no longer exists. Rewritten through a temp file so an interrupted write
- * cannot truncate the index.
- */
-async function removeCodexIndexEntry(sessionId) {
-  if (typeof sessionId !== "string" || sessionId === "") return false;
-  const path = join(home(), ".codex", "session_index.jsonl");
-  let text;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return false;
-  }
-
-  const kept = [];
-  let removed = false;
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    try {
-      if (JSON.parse(line)?.id === sessionId) {
-        removed = true;
-        continue;
-      }
-    } catch {
-      /* Keep anything we cannot parse rather than dropping data. */
-    }
-    kept.push(line);
-  }
-  if (!removed) return false;
-
-  const temporary = `${path}.dsh-session-hub-${Date.now()}`;
-  await writeFile(temporary, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf8");
-  await rename(temporary, path);
-  codexIndex.value = null;
-  return true;
-}
-
-/**
- * Delete one session from its agent's own store.
- *
- * Three guards, because this is irreversible and touches files that live
- * outside the workspace:
- *
- *   1. the key must resolve to a session this plugin actually listed;
- *   2. the target must sit inside the store root that agent owns;
- *   3. a session whose process is alive is refused unless `force` is set, since
- *      deleting the log from under a running agent is not a normal operation.
- *
- * cmux's hook records are deliberately left alone: they are keyed by session id
- * and only decorate a card, so a stale record for a deleted session is inert,
- * while rewriting a file cmux may be writing is not.
- *
- * @returns {{ target: string, indexEntryRemoved: boolean }}
- */
 async function deleteSession(card, force) {
   const source = SOURCES.find((entry) => entry.id === card.agent);
   if (source === undefined) throw new Error(`no store known for agent ${card.agent}`);
@@ -1550,20 +794,21 @@ async function deleteSession(card, force) {
   const root = rootOf(card.agent);
   if (root === null) throw new Error(`no store known for agent ${card.agent}`);
 
-  // DSH keeps one directory per session; every other agent keeps one file.
-  const target = card.agent === "dsh" ? dirname(card.file) : card.file;
+  // The adapter says what to remove and what bookkeeping that implies; the
+  // fence below is what keeps a wrong path from ever reaching `rm`.
+  const plan = source.deletePlan !== undefined ? source.deletePlan(card) : { target: card.file, recursive: false };
   const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
-  if (!target.startsWith(normalizedRoot)) {
-    throw new Error(`refusing to delete ${target}: outside ${normalizedRoot}`);
+  if (!plan.target.startsWith(normalizedRoot)) {
+    throw new Error(`refusing to delete ${plan.target}: outside ${normalizedRoot}`);
   }
 
-  await rm(target, { recursive: card.agent === "dsh", force: false });
+  await rm(plan.target, { recursive: plan.recursive, force: false });
 
-  const indexEntryRemoved = card.agent === "codex" ? await removeCodexIndexEntry(card.sessionId) : false;
+  const indexEntryRemoved = plan.after !== undefined ? await plan.after() : false;
   cache.delete(card.file);
   previewCache.delete(card.file);
   lastCards = lastCards.filter((entry) => entry.key !== card.key);
-  return { target, indexEntryRemoved };
+  return { target: plan.target, indexEntryRemoved };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1708,106 +953,17 @@ async function readHooks() {
   return hooks;
 }
 
-/** Gemini interleaves a seeded list with appended messages; a prefix sees less. */
-function geminiMessageList(events, truncated) {
-  let seeded = [];
-  let lastSet = [];
-  const standalone = [];
-  for (const event of events) {
-    if (Array.isArray(event?.$set?.messages)) {
-      lastSet = event.$set.messages;
-      if (seeded.length === 0) seeded = event.$set.messages.slice();
-      continue;
-    }
-    if (Array.isArray(event?.content) && (event.type === "user" || event.type === "model" || event.type === "gemini")) {
-      standalone.push(event);
-    }
-  }
-  return !truncated && lastSet.length >= seeded.length + standalone.length ? lastSet : [...seeded, ...standalone];
-}
-
 /**
- * The last human input and the last agent output in a run of events.
+ * Fold a store tail into the live preview's IN/OUT.
  *
- * Only the newest of each survives, so this doubles as a tail reducer: the
- * caller can hand it a window and get the current turn out of it.
+ * Which events matter, and how a model's reasoning block differs from its
+ * answer, is the owning adapter's business; this only supplies the accumulator.
  */
 function previewFrom(agent, events) {
-  let input = null;
-  let output = null;
-  let at = null;
-  const stamp = (value) => {
-    const ms = toMs(value);
-    if (ms !== null) at = Math.max(at ?? 0, ms);
-  };
-
-  if (agent === "gemini") {
-    for (const message of geminiMessageList(events, false)) {
-      const body = textOf(message?.content)
-        .replace(/<session_context>[\s\S]*?<\/session_context>/g, "")
-        .trim();
-      if (body === "") continue;
-      if (message?.type === "user") {
-        if (!looksInjected(body)) input = body;
-      } else {
-        output = body;
-      }
-    }
-  } else {
-    for (const event of events) {
-      if (agent === "dsh") {
-        if (event.type === "user/message") {
-          const body = textOf(event.data?.content);
-          if (body !== "" && !looksInjected(body)) input = body;
-        } else if (event.type === "assistant/message") {
-          const body = textOf(event.data?.message?.content);
-          if (body !== "") output = body;
-        }
-        stamp(event.time);
-      } else if (agent === "claude") {
-        if (event.type === "user") {
-          const body = claudeUserText(textOf(event.message?.content));
-          if (body !== "" && !looksInjected(body)) input = body;
-        } else if (event.type === "assistant") {
-          const body = textOf(event.message?.content);
-          if (body !== "") output = body;
-        }
-        stamp(event.timestamp);
-      } else if (agent === "pi") {
-        if (event.type === "message") {
-          const body = textOf(event.message?.content);
-          if (body !== "") {
-            if (event.message?.role === "user") {
-              if (!looksInjected(body)) input = body;
-            } else if (event.message?.role === "assistant") {
-              output = body;
-            }
-          }
-        }
-        stamp(event.timestamp);
-      } else if (agent === "codex") {
-        if (event.type === "response_item" && event.payload?.type === "message") {
-          if (event.payload.role === "user") {
-            const body = codexUserText(event.payload);
-            if (body !== "") input = body;
-          } else if (event.payload.role === "assistant") {
-            const body = textOf(event.payload.content);
-            if (body !== "") output = body;
-          }
-        }
-        stamp(event.timestamp);
-      }
-    }
-  }
-
-  return {
-    input: input === null ? null : oneLine(input, PREVIEW_CHARS),
-    output: output === null ? null : oneLine(output, PREVIEW_CHARS),
-    at,
-  };
+  const state = { input: null, output: null, at: null };
+  adapterOf(agent)?.readPreview?.(events, state);
+  return state;
 }
-
-/** Derived previews, keyed by file and invalidated by mtime + size. */
 const previewCache = new Map();
 
 /** Derive one session's preview from the tail of its own store. */
@@ -1846,98 +1002,15 @@ function freshReading() {
   };
 }
 
-function accumulate(reading, parts) {
-  const current = reading.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  current.input += num(parts.input);
-  current.output += num(parts.output);
-  current.cacheRead += num(parts.cacheRead);
-  current.cacheWrite += num(parts.cacheWrite);
-  current.total = current.input + current.output + current.cacheRead + current.cacheWrite;
-  reading.tokens = current;
-}
-
-/** Track one tool call by id, so a call that never finished stays visible. */
-function trackTool(reading, id, name, present) {
-  if (typeof id !== "string" || id === "") return;
-  if (present) reading.tools.set(id, typeof name === "string" ? name : null);
-  else reading.tools.delete(id);
-}
-
-/** Fold one store event into a reading. Each dialect reports different things. */
+/**
+ * Fold one store event into a running session's token total and waiting set.
+ *
+ * An adapter that records neither simply has no `readStoreEvent`, and the
+ * reading stays empty rather than being guessed at.
+ */
 function readEvent(agent, event, reading) {
-  if (agent === "claude") {
-    if (event.type === "assistant") {
-      const usage = event.message?.usage;
-      if (usage !== null && usage !== undefined) {
-        accumulate(reading, {
-          input: usage.input_tokens,
-          output: usage.output_tokens,
-          cacheRead: usage.cache_read_input_tokens,
-          cacheWrite: usage.cache_creation_input_tokens,
-        });
-      }
-      for (const block of blocksOf(event.message?.content)) {
-        if (block?.type === "tool_use") trackTool(reading, block.id, block.name, true);
-      }
-    } else if (event.type === "user") {
-      for (const block of blocksOf(event.message?.content)) {
-        if (block?.type === "tool_result") trackTool(reading, block.tool_use_id, null, false);
-      }
-    }
-    return;
-  }
-
-  if (agent === "pi") {
-    if (event.type === "message" && event.message?.role === "assistant") {
-      const usage = event.message.usage;
-      if (usage !== null && usage !== undefined) {
-        accumulate(reading, {
-          input: usage.input,
-          output: usage.output,
-          cacheRead: usage.cacheRead,
-          cacheWrite: usage.cacheWrite,
-        });
-      }
-    }
-    return;
-  }
-
-  if (agent === "codex") {
-    const payload = event.payload ?? {};
-    if (event.type === "event_msg" && payload.type === "token_count") {
-      // Codex reports a running total, so this replaces rather than adds.
-      const total = payload.info?.total_token_usage ?? {};
-      reading.tokens = {
-        input: num(total.input_tokens),
-        output: num(total.output_tokens) + num(total.reasoning_output_tokens),
-        cacheRead: num(total.cached_input_tokens),
-        cacheWrite: num(total.cache_write_input_tokens),
-        total: num(total.total_tokens),
-      };
-    } else if (payload.type === "function_call") {
-      trackTool(reading, payload.call_id, payload.name, true);
-    } else if (payload.type === "function_call_output") {
-      trackTool(reading, payload.call_id, null, false);
-    }
-    return;
-  }
-
-  if (agent === "dsh") {
-    // Approval asks and decisions both carry an id, so an ask with no matching
-    // decision is a request genuinely still waiting — not a guess about what a
-    // tool happens to be doing.
-    const data = event.data ?? {};
-    if (event.type === "approval/asked") {
-      if (typeof data.id === "string") {
-        reading.asked.add(data.id);
-        reading.approvalTools.set(data.id, typeof data.toolName === "string" ? data.toolName : null);
-      }
-    } else if (event.type === "approval/decided") {
-      if (typeof data.id === "string") reading.decided.add(data.id);
-    }
-  }
+  adapterOf(agent)?.readStoreEvent?.(event, reading);
 }
-
 function summariseReading(reading) {
   const waiting = [...reading.asked].filter((id) => !reading.decided.has(id));
   if (waiting.length > 0) {
@@ -1972,12 +1045,13 @@ async function readStore(card) {
     return null;
   }
 
-  if (card.agent === "dsh") {
+  // Only a store of concatenated frames cannot be read from a byte offset.
+  if (adapterOf(card.agent)?.storeKind === "frames") {
     const stamp = `${stats.mtimeMs}:${stats.size}`;
     if (reading.stamped !== stamp) {
       try {
         const text = decodeZstdFrames(await readFile(card.file)).toString("utf8");
-        for (const event of parseJsonl(text)) readEvent("dsh", event, reading);
+        for (const event of parseJsonl(text)) readEvent(card.agent, event, reading);
         reading.stamped = stamp;
       } catch (error) {
         // A store caught mid-write can fail to decode, and the next poll
@@ -2067,7 +1141,7 @@ async function derivePreview(card) {
   try {
     const { buffer, fromStart } = await readTail(card.file, PREVIEW_TAIL_BYTES);
     let events;
-    if (card.agent === "dsh") {
+    if (adapterOf(card.agent)?.storeKind === "frames") {
       events = parseJsonl(decodeZstdFrames(buffer).toString("utf8"));
     } else {
       const text = buffer.toString("utf8");
@@ -2086,36 +1160,12 @@ async function derivePreview(card) {
  * Reopen in the original agent
  * ------------------------------------------------------------------ */
 
-/** The command that continues this session inside its own agent. */
+/** The command that reopens a session in its own agent, or null when unknown. */
 function resumeCommandFor(card) {
   const id = card.sessionId;
-  if (card.agent === "dsh" || typeof id !== "string" || id === "") return null;
-  if (card.agent === "claude") return `claude --resume ${id}`;
-  if (card.agent === "codex") return `codex resume ${id}`;
-  if (card.agent === "gemini") return `gemini --resume ${id}`;
-  if (card.agent === "pi") return `pi --session ${id}`;
-  if (card.agent === "opencode") return `opencode --session ${id}`;
-  return null;
+  if (typeof id !== "string" || id === "") return null;
+  return adapterOf(card.agent)?.resumeCommand(id) ?? null;
 }
-
-/**
- * Wake a session in a terminal.
- *
- * cmux is preferred: `new-workspace --cwd … --command …` reopens the session in
- * the terminal the user already drives these agents from, and launches cmux
- * itself when it is not running. Terminal.app is the fallback. The command is
- * returned either way, so the UI can always show or copy exactly what ran.
- */
-/**
- * Run a command in a terminal at `cwd`.
- *
- * cmux first — it is the terminal these agents are usually driven from, and it
- * launches itself if it is not running. Terminal.app is the fallback, and a
- * `.command` script copied to the clipboard path is the last resort. The caller
- * gets the command back either way, so the UI can always show what ran.
- *
- * @returns {{ kind: 'cmux'|'terminal'|'manual', command: string, terminal: string|null, reason?: string }}
- */
 async function launchInTerminal(cwd, command, title) {
   const cli = resolveCmuxCli();
   if (cli !== null) {
@@ -2147,17 +1197,9 @@ async function launchInTerminal(cwd, command, title) {
 }
 
 /** The command that starts a fresh interactive session for each agent. */
-const SPAWN_COMMANDS = {
-  claude: "claude",
-  codex: "codex",
-  gemini: "gemini",
-  pi: "pi",
-  opencode: "opencode",
-};
-
 async function openOriginal(value) {
   const { card } = value;
-  if (card.agent === "dsh") {
+  if (adapterOf(card.agent)?.clientOwned === true) {
     return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
   }
 
@@ -2178,11 +1220,11 @@ async function openOriginal(value) {
  * registry, not to a shell), so this handles the command-line agents only.
  */
 async function spawnSession(agent, cwd) {
-  const command = SPAWN_COMMANDS[agent];
-  if (command === undefined) {
+  const command = adapterOf(agent)?.spawnCommand ?? null;
+  if (command === null) {
     return { ok: false, error: `no way to start a ${agent} session from here` };
   }
-  const launched = await launchInTerminal(cwd, command, `${AGENT_LABELS[agent]} · ${basename(cwd)}`);
+  const launched = await launchInTerminal(cwd, command, `${adapterOf(agent).label} · ${basename(cwd)}`);
   return { ok: true, agent, cwd, command, ...launched };
 }
 
@@ -2233,7 +1275,7 @@ async function dispatch(payload, ctx) {
       generatedAt: Date.now(),
       cmux,
       cmuxPath: resolveCmuxCli(),
-      agents: SOURCES.map((source) => ({ id: source.id, label: AGENT_LABELS[source.id] })),
+      agents: SOURCES.map((source) => ({ id: source.id, label: source.label })),
       sources,
       runningCount,
       pins,
@@ -2429,8 +1471,11 @@ async function dispatch(payload, ctx) {
     const agent = typeof payload?.agent === "string" ? payload.agent : "";
     const cwd = typeof payload?.cwd === "string" && payload.cwd.startsWith("/") ? payload.cwd : null;
     if (cwd === null) return { ok: false, error: "spawn needs an absolute cwd" };
-    if (AGENT_LABELS[agent] === undefined) return { ok: false, error: `unknown agent: ${agent}` };
-    if (agent === "dsh") return { ok: false, error: "a DSH session is started by the client" };
+    const target = adapterOf(agent);
+    if (target === null) return { ok: false, error: `unknown agent: ${agent}` };
+    if (target.spawnCommand === null) {
+      return { ok: false, error: `a ${target.label} session is started by the client` };
+    }
     return await spawnSession(agent, cwd);
   }
 
