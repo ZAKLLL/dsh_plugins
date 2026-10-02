@@ -15,6 +15,7 @@ dsh_plugins/
 ├── dsh-session-hub/     # Session Hub 插件（index.js / client.js / locale / test）
 ├── .githooks/           # Git hooks（通过 core.hooksPath 生效）
 ├── .gitmessage          # 提交信息模板
+├── LICENSE              # MIT
 └── .gitignore           # 忽略临时参考与运行期产物
 ```
 
@@ -30,3 +31,7 @@ git push
 ```
 
 提交信息格式为 `类型: 简要描述`，类型：`feat` | `fix` | `docs` | `style` | `refactor` | `test` | `chore` | `env`。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 ZAKLLL

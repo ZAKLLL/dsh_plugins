@@ -4,6 +4,7 @@
   "private": true,
   "description": "One panel for every coding-agent session on this machine — DSH, Claude Code, Codex and Gemini CLI — collected across all projects, with drag-to-continue into the current chat and one-click reopen in the original agent.",
   "type": "module",
+  "license": "MIT",
   "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
