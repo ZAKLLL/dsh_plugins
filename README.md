@@ -30,6 +30,8 @@ dsh_plugins/
 - 因此**移动插件目录会让这条 link 失效**，表现为重启后插件加载失败。
 
 > ⚠️ **挪动插件目录时必须同时重新安装**，不能只挪目录：先 `plugin_manager remove_bundle` 卸掉旧条目（同名 bundle 直接再装会报 `ambiguous-install`），再 `install_bundle` 到新路径，最后重启验证。
+>
+> 实测补充：改完 link 后**宿主半边会自行按新路径重新加载**（`plugin_manager list_plugins` 里 `fiberPhase: active`），但**客户端半边不会**——浏览器侧仍持有移动前的模块解析，而客户端 HMR 监视的是**已经不存在**的旧路径，所以 touch 新文件也唤不回来（表现为插槽注册整批消失，例如 `sidebar.footer.action` 里找不到本插件）。**刷新页面**即可重新拉取；重启则一定生效。
 
 **暂不引入**根 `package.json` 与 pnpm workspace：插件目前无任何依赖，加 workspace 会给 profile 的安装路径引入额外变量；等第二个插件真的需要共享开发依赖时再加。
 
