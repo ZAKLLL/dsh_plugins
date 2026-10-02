@@ -284,6 +284,7 @@ const expected = [
   "sidebar.footer.action#session-hub",
   "shell.overlay#session-hub-panel",
   "shell.overlay#session-hub-confirm",
+  "shell.overlay#session-hub-spawn",
   "conversation.composer.dock#session-hub-bridge",
   "sidebar.right.pane.tab#dsh-session-hub",
   "sidebar.right.pane.tab.title#dsh-session-hub",
@@ -300,15 +301,18 @@ const SidebarTab = registered.get("sidebar.right.pane.tab#dsh-session-hub");
 const TabTitle = registered.get("sidebar.right.pane.tab.title#dsh-session-hub");
 const Overlay = registered.get("shell.overlay#session-hub-panel");
 const Confirm = registered.get("shell.overlay#session-hub-confirm");
+const Spawn = registered.get("shell.overlay#session-hub-spawn");
 const Bridge = registered.get("conversation.composer.dock#session-hub-bridge");
 assert.equal(typeof SidebarTab, "function");
 assert.equal(typeof TabTitle, "function");
 assert.equal(typeof Overlay, "function");
 assert.equal(typeof Confirm, "function");
+assert.equal(typeof Spawn, "function");
 assert.equal(typeof Bridge, "function");
 
 // The bridge and the confirm dialog are legitimately null-rendering here.
 assert.equal(render(Confirm, {}).tree, null, "no pending delete means no dialog");
+assert.equal(render(Spawn, {}).tree, null, "no pending project means no spawn dialog");
 assert.equal(render(Bridge, { sessionId: "s", inputActions: null }).tree, null, "the bridge renders nothing");
 // `Overlay` is gated on its store, which starts closed.
 assert.equal(render(Overlay, {}).tree, null, "the overlay is closed by default");
@@ -341,6 +345,15 @@ for (let attempt = 0; attempt < 60; attempt += 1) {
   if (hostElements(second.tree, "sh-group-head").length > 0) break;
 }
 assert.ok(second !== null, "the second pass must produce a tree");
+
+// One more pass: state an effect wrote (the group collapse default) only shows
+// on the render after it ran.
+second = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+for (const effect of second.effects) {
+  const cleanup = effect();
+  if (typeof cleanup === "function") cleanups.push(cleanup);
+}
+
 const rows = hostElements(second.tree, "sh-row");
 const groups = hostElements(second.tree, "sh-group-head");
 const carets = hostElements(second.tree, "sh-caret-btn");
@@ -372,6 +385,25 @@ assert.equal(hostElements(second.tree, "sh-group-line").length, 0, "the stray gr
 const groupActions = hostElements(second.tree, "sh-group-actions");
 assert.ok(groupActions.length > 0, "every project header must carry its controls");
 assert.equal(groupActions.length, groups.length, "one control cluster per project header");
+for (const cluster of groupActions) {
+  const controls = flatten(cluster).filter((node) => node.type === "button");
+  assert.equal(controls.length, 3, "a project header must offer new-session, pin and delete");
+  assert.ok(
+    controls.every((control) => typeof control.props.title === "string" && control.props.title !== ""),
+    "every project control needs a tooltip",
+  );
+}
+
+// Only the topmost group opens by default; the rest start collapsed, or a
+// corpus of hundreds of sessions across dozens of projects is just noise.
+const opened = groups.filter((head) =>
+  flatten(head).some(
+    (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-group-arrow-open"),
+  ),
+);
+assert.equal(opened.length, 1, "exactly one project must be expanded on open");
+assert.equal(hostElements(second.tree, "sh-rowlist").length, 1, "only the expanded group may render rows");
+assert.ok(rows.length > 0, "the expanded group must render its page");
 assert.ok(rows.length <= 400, "the render must stay bounded by paging");
 
 // No element may carry a NaN or an `undefined` child where text belongs.

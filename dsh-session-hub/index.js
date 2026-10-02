@@ -24,7 +24,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -43,6 +43,8 @@ const AGENT_LABELS = {
   claude: "Claude Code",
   codex: "Codex",
   gemini: "Gemini CLI",
+  pi: "pi",
+  opencode: "opencode",
 };
 
 /** A session whose store holds no human text at all. */
@@ -669,7 +671,7 @@ function geminiProjectPath(sessionDir) {
  * records only ever see the agents that cmux launched, so they are an
  * enrichment rather than the foundation.
  */
-const AGENT_EXECUTABLES = ["claude", "codex", "gemini"];
+const AGENT_EXECUTABLES = ["claude", "codex", "gemini", "pi", "opencode"];
 
 const PROCESS_TTL_MS = 2000;
 const processCache = { at: 0, value: [] };
@@ -711,6 +713,32 @@ async function cwdOf(pid) {
   return null;
 }
 
+/**
+ * Whether a process name *names* this agent, rather than merely containing it.
+ *
+ * The delimiters matter: a plain `includes("pi")` would claim `apiserver`, and
+ * `xcode` would be read as `codex`.
+ */
+function namesAgent(text, agent) {
+  return new RegExp(`(?:^|[-_.])${agent}(?:$|[-_.])`, "i").test(text);
+}
+
+/** A path with symlinks resolved; `lsof` already reports it this way. */
+const canonicalCache = new Map();
+async function canonical(path) {
+  if (typeof path !== "string" || path === "") return path;
+  const hit = canonicalCache.get(path);
+  if (hit !== undefined) return hit;
+  let value = path;
+  try {
+    value = await realpath(path);
+  } catch {
+    /* A path that no longer exists stays as written. */
+  }
+  canonicalCache.set(path, value);
+  return value;
+}
+
 /** Every live agent process on this machine, refreshed on a short interval. */
 async function scanAgentProcesses() {
   const now = Date.now();
@@ -720,15 +748,22 @@ async function scanAgentProcesses() {
   try {
     const { stdout } = await execFileAsync("ps", ["-axo", "pid=,command="], { timeout: 8000, maxBuffer: 8 * 1024 * 1024 });
     for (const line of stdout.split("\n")) {
-      // `ps` prints " <pid> <executable> <args…>"; matching on the executable
-      // token keeps this scan from finding itself (a `node` running `ps`).
+      // `ps` prints " <pid> <executable> <args…>".
       const match = /^\s*(\d+)\s+(\S+)\s*(.*)$/.exec(line);
       if (match === null) continue;
       const pid = Number(match[1]);
-      const executable = basename(match[2]);
       const args = match[3] ?? "";
-      const agent = AGENT_EXECUTABLES.find((name) => executable.includes(name));
+
+      // The executable, and the script it may hand off to: macOS reports a
+      // shebang script as `/bin/sh /path/to/agent`, and a wrapper as
+      // `node /path/to/claude-wrapper`, so the executable alone is `sh` or
+      // `node` and matches nothing. Only the *first* argument is considered, so
+      // a later argument that merely mentions an agent name is not a match.
+      const argv = args.split(/\s+/).filter(Boolean);
+      const names = [basename(match[2]), argv[0] === undefined ? null : basename(argv[0])];
+      const agent = AGENT_EXECUTABLES.find((name) => names.some((candidate) => candidate !== null && namesAgent(candidate, name)));
       if (agent === undefined || !Number.isInteger(pid) || pid <= 0) continue;
+
       found.push({ agent, pid, args, sessionId: sessionIdFromArgs(args), cwd: null });
     }
   } catch {
@@ -753,7 +788,7 @@ async function scanAgentProcesses() {
  * matched by workspace to the *newest* session there — which, for an agent that
  * just started, is the session it created.
  */
-function linkProcesses(cards, processes) {
+async function linkProcesses(cards, processes) {
   for (const card of cards) delete card.process;
 
   const bySession = new Map();
@@ -771,10 +806,25 @@ function linkProcesses(cards, processes) {
     }
   }
 
-  // `cards` is newest-first, so `find` picks the most recent session there.
+  // `cards` is newest-first, so the first match is the most recent session there.
   for (const entry of processes) {
     if (claimed.has(entry) || entry.sessionId !== null || entry.cwd === null) continue;
-    const card = cards.find((candidate) => candidate.agent === entry.agent && candidate.cwd === entry.cwd && candidate.process === undefined);
+    const sameAgent = cards.filter((card) => card.agent === entry.agent && card.process === undefined);
+
+    let card = sameAgent.find((candidate) => candidate.cwd === entry.cwd);
+    if (card === undefined) {
+      // `lsof` reports a canonical path while an agent may have recorded a
+      // symlinked one — `/tmp` is `/private/tmp` on macOS — so the fallback
+      // compares both sides with symlinks resolved.
+      const target = await canonical(entry.cwd);
+      for (const candidate of sameAgent) {
+        if ((await canonical(candidate.cwd)) === target) {
+          card = candidate;
+          break;
+        }
+      }
+    }
+
     if (card !== undefined) {
       card.process = entry;
       claimed.add(entry);
@@ -927,7 +977,7 @@ async function refreshLive(ctx, cards, force = false) {
     processCache.at = 0;
   }
   const [cmuxRecords, processes] = await Promise.all([readCmuxSessions(force), scanAgentProcesses()]);
-  linkProcesses(cards, processes);
+  await linkProcesses(cards, processes);
   for (const card of cards) decorate(card, cmuxRecords, ctx);
   return cards;
 }
@@ -940,6 +990,262 @@ async function refreshLive(ctx, cards, force = false) {
  * Every source: its root, its file matcher, how large a listing prefix to read,
  * when that prefix is already sufficient, and how to build a value from text.
  */
+/* ------------------------------------------------------------------ *
+ * Source: pi
+ * ------------------------------------------------------------------ */
+
+/**
+ * pi keeps one JSONL file per session under
+ * `~/.pi/agent/sessions/<workspace-slug>/<timestamp>_<id>.jsonl`.
+ *
+ * The header is close to DSH's (`type` / `id` / `timestamp` / `cwd`) and each
+ * turn is a `message` row whose `message.content` is a block list — so this is
+ * deliberately the same shape of parser rather than a new dialect.
+ */
+function buildPi(file, stats, events, truncated) {
+  const header = events.find((event) => event.type === "session") ?? {};
+  const sessionId = typeof header.id === "string" ? header.id : basename(file, ".jsonl");
+  const cwd = typeof header.cwd === "string" ? header.cwd : null;
+  const created = toMs(header.timestamp) ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
+
+  const lines = [];
+  let title = "";
+  let assistantTitle = "";
+  let messages = 0;
+
+  for (const event of events) {
+    if (event.type !== "message") continue;
+    const payload = event.message ?? {};
+    const body = textOf(payload.content);
+    if (body === "") continue;
+    if (payload.role === "user") {
+      if (looksInjected(body)) continue;
+      messages += 1;
+      if (title === "") title = oneLine(body, 140);
+      lines.push("## User", "", body, "");
+    } else if (payload.role === "assistant") {
+      messages += 1;
+      if (assistantTitle === "") assistantTitle = body;
+      lines.push("## Assistant", "", body, "");
+    }
+  }
+
+  return {
+    card: {
+      key: `pi:${file}`,
+      agent: "pi",
+      agentLabel: AGENT_LABELS.pi,
+      sessionId,
+      title: title || oneLine(assistantTitle, 140) || UNTITLED,
+      cwd,
+      project: projectOf(cwd),
+      createdAt: created,
+      updatedAt: Math.round(stats.mtimeMs ?? created ?? 0) || null,
+      bytes: stats.size ?? 0,
+      messages,
+      partial: truncated,
+      subagent: false,
+      parentSessionId: null,
+      depth: 0,
+      file,
+      resumeCommand: sessionId ? `pi --session ${sessionId}` : null,
+    },
+    body: lines.join("\n").trimEnd(),
+    meta: { formatVersion: header.version ?? null },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Source: opencode
+ * ------------------------------------------------------------------ */
+
+/**
+ * opencode stores every session in one SQLite database rather than one file per
+ * session, so this source does not fit the walk-a-directory shape at all: it
+ * queries, reads and deletes by session id.
+ *
+ * `node:sqlite` ships with the runtime, and is imported lazily so a machine
+ * without opencode (or on an older Node) simply has no rows here.
+ */
+const OPENCODE_STAMP_TTL_MS = 2000;
+
+function opencodeDbPath() {
+  return join(home(), ".local", "share", "opencode", "opencode.db");
+}
+
+/** Open the database, or return null when it is absent or unreadable. */
+async function openOpencode({ readOnly }) {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    return new DatabaseSync(opencodeDbPath(), { readOnly });
+  } catch {
+    return null;
+  }
+}
+
+/** The concatenated text of one message's `part` rows. */
+function opencodeText(parts) {
+  const chunks = [];
+  for (const row of parts) {
+    let data;
+    try {
+      data = JSON.parse(row.data);
+    } catch {
+      continue;
+    }
+    if (data?.type === "text" && typeof data.text === "string") chunks.push(data.text);
+  }
+  return chunks.join("\n").trim();
+}
+
+/** One card per session row, without reading any message bodies. */
+async function listOpencode() {
+  const db = await openOpencode({ readOnly: true });
+  if (db === null) return [];
+  try {
+    const rows = db
+      .prepare("select id, parent_id, directory, title, time_created, time_updated from session")
+      .all();
+    const counts = new Map(
+      db
+        .prepare("select session_id, count(*) as n from message group by session_id")
+        .all()
+        .map((row) => [row.session_id, row.n]),
+    );
+
+    return rows.map((row) => ({
+      card: {
+        key: `opencode:${row.id}`,
+        agent: "opencode",
+        agentLabel: AGENT_LABELS.opencode,
+        sessionId: row.id,
+        title: typeof row.title === "string" && row.title !== "" ? oneLine(row.title, 140) : UNTITLED,
+        cwd: typeof row.directory === "string" ? row.directory : null,
+        project: projectOf(row.directory),
+        createdAt: Number(row.time_created) || null,
+        updatedAt: Number(row.time_updated) || null,
+        // A row has no byte size; the panel renders that as "—".
+        bytes: 0,
+        messages: counts.get(row.id) ?? 0,
+        // Sessions are read completely in one query, so nothing is a prefix.
+        partial: false,
+        subagent: row.parent_id !== null,
+        parentSessionId: typeof row.parent_id === "string" ? row.parent_id : null,
+        depth: 0,
+        file: opencodeDbPath(),
+        resumeCommand: `opencode --session ${row.id}`,
+      },
+      body: "",
+      meta: {},
+    }));
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/** Read one opencode session in full, for the transcript and the preview. */
+async function readOpencode(sessionId, { withBody }) {
+  const db = await openOpencode({ readOnly: true });
+  if (db === null) return null;
+  try {
+    const row = db.prepare("select * from session where id = ?").get(sessionId);
+    if (row === undefined) return null;
+
+    const messages = db
+      .prepare("select id, data from message where session_id = ? order by time_created, id")
+      .all(sessionId);
+    const parts = db
+      .prepare("select message_id, data from part where session_id = ? order by time_created, id")
+      .all(sessionId);
+    const byMessage = new Map();
+    for (const part of parts) {
+      if (!byMessage.has(part.message_id)) byMessage.set(part.message_id, []);
+      byMessage.get(part.message_id).push(part);
+    }
+
+    let input = null;
+    let output = null;
+    const lines = [];
+    let count = 0;
+    for (const message of messages) {
+      let meta;
+      try {
+        meta = JSON.parse(message.data);
+      } catch {
+        continue;
+      }
+      const body = opencodeText(byMessage.get(message.id) ?? []);
+      if (body === "") continue;
+      if (meta?.role === "user") {
+        if (looksInjected(body)) continue;
+        count += 1;
+        if (input === null) input = body;
+        if (withBody) lines.push("## User", "", body, "");
+      } else if (meta?.role === "assistant") {
+        count += 1;
+        output = body;
+        if (withBody) lines.push("## Assistant", "", body, "");
+      }
+    }
+
+    const card = {
+      key: `opencode:${row.id}`,
+      agent: "opencode",
+      agentLabel: AGENT_LABELS.opencode,
+      sessionId: row.id,
+      title:
+        typeof row.title === "string" && row.title !== "" ? oneLine(row.title, 140) : oneLine(input ?? "", 140) || UNTITLED,
+      cwd: typeof row.directory === "string" ? row.directory : null,
+      project: projectOf(row.directory),
+      createdAt: Number(row.time_created) || null,
+      updatedAt: Number(row.time_updated) || null,
+      bytes: 0,
+      messages: count,
+      partial: false,
+      subagent: row.parent_id !== null,
+      parentSessionId: typeof row.parent_id === "string" ? row.parent_id : null,
+      depth: 0,
+      file: opencodeDbPath(),
+      resumeCommand: `opencode --session ${row.id}`,
+    };
+    return { card, body: lines.join("\n").trimEnd(), meta: { preview: { input, output } } };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Delete one opencode session.
+ *
+ * opencode owns this database and may be writing to it, so the caller's
+ * running-process guard is what keeps this safe; the three deletes run in one
+ * transaction so a failure cannot leave a session half-removed.
+ */
+async function removeOpencode(sessionId) {
+  const db = await openOpencode({ readOnly: false });
+  if (db === null) throw new Error("opencode database is not readable");
+  try {
+    db.exec("begin");
+    db.prepare("delete from part where session_id = ?").run(sessionId);
+    db.prepare("delete from message where session_id = ?").run(sessionId);
+    db.prepare("delete from session where id = ?").run(sessionId);
+    db.exec("commit");
+  } catch (error) {
+    try {
+      db.exec("rollback");
+    } catch {
+      /* The transaction may already be gone. */
+    }
+    throw error;
+  } finally {
+    db.close();
+  }
+}
+
 const SOURCES = [
   {
     id: "dsh",
@@ -972,7 +1278,35 @@ const SOURCES = [
     prefix: { start: 131072, max: 2097152, complete: (events) => hasGeminiSignal(events) },
     build: buildGemini,
   },
+  {
+    id: "pi",
+    root: () => join(home(), ".pi", "agent", "sessions"),
+    match: (name) => name.endsWith(".jsonl"),
+    concurrency: 8,
+    // `pi` records no title of its own, so the first human message is the gate.
+    prefix: { start: 131072, max: 2097152, complete: (events) => hasPiSignal(events) },
+    build: buildPi,
+  },
+  {
+    id: "opencode",
+    // A SQLite store: this source answers with its own list/read/delete rather
+    // than a directory walk, so it has no `match` or `build`.
+    root: () => dirname(opencodeDbPath()),
+    list: () => listOpencode(),
+    full: (sessionId) => readOpencode(sessionId, { withBody: true }),
+    preview: (card) => readOpencode(card.sessionId, { withBody: false }),
+    remove: (card) => removeOpencode(card.sessionId),
+  },
 ];
+
+function hasPiSignal(events) {
+  for (const event of events) {
+    if (event.type !== "message" || event.message?.role !== "user") continue;
+    const body = textOf(event.message.content);
+    if (body !== "" && !looksInjected(body)) return true;
+  }
+  return false;
+}
 
 function hasClaudeSignal(events) {
   let human = false;
@@ -1093,15 +1427,22 @@ async function inventory(force, ctx) {
 
   for (const source of SOURCES) {
     const root = source.root();
-    const files = await walk(root, (_path, name) => source.match(name));
-    const values = await mapLimit(files, source.concurrency, (file) => cachedCard(source, file, force));
+    // A source that owns a non-file store answers with its own list.
+    const values =
+      typeof source.list === "function"
+        ? await source.list(force)
+        : await mapLimit(
+            await walk(root, (_path, name) => source.match(name)),
+            source.concurrency,
+            (file) => cachedCard(source, file, force),
+          );
     let parsed = 0;
     for (const value of values) {
       if (value === null || value === undefined) continue;
       cards.push(value.card);
       parsed += 1;
     }
-    sources.push({ id: source.id, label: AGENT_LABELS[source.id], root, total: files.length, parsed });
+    sources.push({ id: source.id, label: AGENT_LABELS[source.id], root, total: values.length, parsed });
   }
 
   cards.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
@@ -1122,14 +1463,16 @@ async function fullValueByKey(key) {
   for (const source of SOURCES) {
     const prefix = `${source.id}:`;
     if (!key.startsWith(prefix)) continue;
-    const file = key.slice(prefix.length);
+    const rest = key.slice(prefix.length);
+    // A source that owns a non-file store re-reads by its own id.
+    if (typeof source.full === "function") return await source.full(rest);
     let stats;
     try {
-      stats = await stat(file);
+      stats = await stat(rest);
     } catch {
       return null;
     }
-    return parseValue(source, file, stats, { full: true });
+    return parseValue(source, rest, stats, { full: true });
   }
   return null;
 }
@@ -1273,6 +1616,25 @@ async function removeCodexIndexEntry(sessionId) {
  * @returns {{ target: string, indexEntryRemoved: boolean }}
  */
 async function deleteSession(card, force) {
+  const source = SOURCES.find((entry) => entry.id === card.agent);
+  if (source === undefined) throw new Error(`no store known for agent ${card.agent}`);
+
+  if (card.running === true && force !== true) {
+    const error = new Error("session is running");
+    error.code = "running";
+    throw error;
+  }
+
+  // A store that is not a directory of files deletes through its own handle:
+  // there is no path to fence, and opencode's transaction is the guard instead.
+  if (typeof source.remove === "function") {
+    await source.remove(card);
+    cache.delete(card.key);
+    previewCache.delete(card.key);
+    lastCards = lastCards.filter((entry) => entry.key !== card.key);
+    return { target: card.sessionId ?? card.key, indexEntryRemoved: false, store: source.id };
+  }
+
   const root = rootOf(card.agent);
   if (root === null) throw new Error(`no store known for agent ${card.agent}`);
 
@@ -1281,12 +1643,6 @@ async function deleteSession(card, force) {
   const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
   if (!target.startsWith(normalizedRoot)) {
     throw new Error(`refusing to delete ${target}: outside ${normalizedRoot}`);
-  }
-
-  if (card.running === true && force !== true) {
-    const error = new Error("session is running");
-    error.code = "running";
-    throw error;
   }
 
   await rm(target, { recursive: card.agent === "dsh", force: false });
@@ -1505,6 +1861,18 @@ function previewFrom(agent, events) {
           if (body !== "") output = body;
         }
         stamp(event.timestamp);
+      } else if (agent === "pi") {
+        if (event.type === "message") {
+          const body = textOf(event.message?.content);
+          if (body !== "") {
+            if (event.message?.role === "user") {
+              if (!looksInjected(body)) input = body;
+            } else if (event.message?.role === "assistant") {
+              output = body;
+            }
+          }
+        }
+        stamp(event.timestamp);
       } else if (agent === "codex") {
         if (event.type === "response_item" && event.payload?.type === "message") {
           if (event.payload.role === "user") {
@@ -1532,6 +1900,24 @@ const previewCache = new Map();
 
 /** Derive one session's preview from the tail of its own store. */
 async function derivePreview(card) {
+  // A source that owns a non-file store answers the preview from its own query,
+  // and is invalidated by the session's own updated-at rather than an mtime.
+  const owner = SOURCES.find((entry) => entry.id === card.agent);
+  if (typeof owner?.preview === "function") {
+    const stamp = `store:${card.updatedAt ?? 0}:${card.messages ?? 0}`;
+    const hit = previewCache.get(card.key);
+    if (hit !== undefined && hit.stamp === stamp) return hit.value;
+    const value = await owner.preview(card);
+    const raw = value?.meta?.preview ?? { input: null, output: null };
+    const normalised = {
+      input: raw.input === null || raw.input === undefined ? null : oneLine(raw.input, PREVIEW_CHARS),
+      output: raw.output === null || raw.output === undefined ? null : oneLine(raw.output, PREVIEW_CHARS),
+      at: card.updatedAt ?? null,
+    };
+    previewCache.set(card.key, { stamp, value: normalised });
+    return normalised;
+  }
+
   let stats;
   try {
     stats = await stat(card.file);
@@ -1576,6 +1962,8 @@ function resumeCommandFor(card) {
   if (card.agent === "claude") return `claude --resume ${id}`;
   if (card.agent === "codex") return `codex resume ${id}`;
   if (card.agent === "gemini") return `gemini --resume ${id}`;
+  if (card.agent === "pi") return `pi --session ${id}`;
+  if (card.agent === "opencode") return `opencode --session ${id}`;
   return null;
 }
 
@@ -1632,6 +2020,8 @@ const SPAWN_COMMANDS = {
   claude: "claude",
   codex: "codex",
   gemini: "gemini",
+  pi: "pi",
+  opencode: "opencode",
 };
 
 async function openOriginal(value) {
@@ -1699,6 +2089,9 @@ function hubState() {
  * @param payload - The request body; `op` selects the operation.
  * @param ctx - The Host plugin context of the generation that is live.
  */
+/** Every operation this Host answers; also reported when an unknown one arrives. */
+const OPS = ["list", "status", "preview", "pin", "transcript", "continue", "open", "spawn", "delete", "delete-many"];
+
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
 
@@ -1919,7 +2312,9 @@ async function dispatch(payload, ctx) {
     return { ok: true, ...(await openOriginal(value)) };
   }
 
-  return { ok: false, error: `unknown op: ${op}` };
+  // A stale Host is the failure this reports most often, so the message names
+  // what this generation actually answers instead of just rejecting the op.
+  return { ok: false, error: `unknown op: ${op}`, supported: OPS };
 }
 
 /**

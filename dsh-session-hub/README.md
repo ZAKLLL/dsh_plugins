@@ -1,6 +1,6 @@
-# dsh-session-hub · 会话中枢
+# dsh-session-hub · Agents 会话管理
 
-把**本机所有 coding agent 的会话**汇总到一个面板里——DSH、Claude Code、Codex、Gemini CLI——跨全部项目收集，然后：
+把**本机所有 coding agent 的会话**汇总到一个面板里——DSH、Claude Code、Codex、Gemini CLI、pi、opencode——跨全部项目收集，然后：
 
 - **拖进输入框**：把那个会话的完整历史作为文件交给当前 agent，让它自己解析、接着推进。
 - **「在此续接」**：把历史物化到当前工作区，并把引用写进当前草稿（等价、更省事的路径）。
@@ -13,14 +13,18 @@
 
 ## 它从哪里收集
 
-| agent | 目录 | 格式 |
+| agent | 存在哪 | 格式 |
 | --- | --- | --- |
 | DSH | `~/.dsh/sessions/<slug>/<sessionId>/session.v4.jsonl.zstd` | Zstandard（**多帧串联**）+ JSONL |
 | Claude Code | `~/.claude/projects/<slug>/**.jsonl` | JSONL |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | JSONL |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/**.jsonl` | JSONL（`$set` 补丁流） |
+| **pi** | `~/.pi/agent/sessions/<slug>/<时间戳>_<id>.jsonl` | JSONL（头和 DSH 近乎同构） |
+| **opencode** | `~/.local/share/opencode/opencode.db` | **SQLite**（`session` / `message` / `part` 三张表） |
 
-四家的格式完全不同，解析器各自独立。实测本机 **378 个会话、约 470ms 完成一次全量扫描**。
+六家的格式互不相同，解析器各自独立。实测本机 **414 个会话**（DSH 17 / Claude 77 / Codex 276 / Gemini 10 / pi 29 / opencode 5）。
+
+**opencode 是唯一一个不是「一堆文件」的源**：它整库存在一个 SQLite 里，所以那一项不走「遍历目录」的形状，而是自己实现 `list` / `full` / `preview` / `remove`，按 session id 查询、读取、删除（三张表的删除包在一个事务里）。读用 `node:sqlite`（运行时自带，**惰性 import**，所以机器上没有 opencode 或 Node 较老时这里就是空列表）。它也是唯一一个**自带 AI 标题**的源——标题直接来自 `session.title` 列。
 
 ### 标题从哪来
 
@@ -83,6 +87,23 @@
 
 ---
 
+## 在项目里新建会话
+
+项目表头的 **＋** 打开一个选择器：**DSH / Claude Code / Codex / Gemini CLI / pi / opencode**，选哪个就在**那个项目目录**里把那个 agent 跑起来。
+
+两条启动路径，因为归属不同：
+
+| Agent | 怎么启动 | 为什么这样 |
+| --- | --- | --- |
+| **DSH** | 客户端走 DSH 自己的工作区注册表：按路径找已有工作区（没有才 `workspaces.create({ path })`），然后 `uiWorkspace.openWorkspace(workspaceId)` | DSH 会话属于工作区注册表，不属于某个 shell。`openWorkspace` 是 DSH 原生的「新会话」语义——**它自己会复用该工作区里已有的空白会话，或新建一个**——所以这里不用自己拼 |
+| Claude / Codex / Gemini / pi / opencode | 宿主在**该目录**下用 `cmux new-workspace --cwd … --command <agent>` 起一个 | 这些 agent 就是命令行程序；cmux 不可用时退 Terminal.app，再不行把命令复制到剪贴板 |
+
+**为什么 DSH 不走同一条路**：它没有命令行入口，会话是由工作区创建的。把两者混成一个「spawn」概念会在任一侧失真——所以 `spawn` 这个宿主操作**明确拒绝 DSH**，由客户端自己处理。
+
+**＋ 只在「按项目」分组时出现**：按 agent 分组时没有「项目」可谈，那个控件就不渲染（渲染测试里断言了项目表头恰好三个控件）。
+
+---
+
 ## 删除会话
 
 行末的 🗑 会打开一个**确认弹窗**（显示标题、agent、即将删除的确切路径），确认后才动手。**项目表头悬停时也有一个 🗑**，一次删掉该项目下的全部会话——跨所有 agent。删除的是**原始 agent 自己的存储**：
@@ -93,6 +114,8 @@
 | Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl` |
 | Codex | `~/.codex/sessions/…/rollout-*.jsonl`，**外加从 `session_index.jsonl` 摘掉它的 `thread_name` 条目**（否则会留下一个指向已删会话的名字） |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/*.jsonl` |
+| pi | `~/.pi/agent/sessions/<slug>/<时间戳>_<id>.jsonl` |
+| opencode | **不是文件**：`delete from part/message/session where session_id = ?`，三句包在一个事务里 |
 
 ### 整项目删除
 
@@ -127,16 +150,21 @@ Codex 的索引是**先写临时文件再 rename** 重写的，写到一半被�
 
 | 来源 | 覆盖 | 判据 | 需要配合吗 |
 | --- | --- | --- | --- |
-| **进程表** | Claude / Codex / Gemini | `ps -axo pid=,command=` 里那个进程是否真的在跑 | **不需要**——直接开在终端里的也看得见 |
+| **进程表** | Claude / Codex / Gemini / pi / opencode | `ps -axo pid=,command=` 里那个进程是否真的在跑 | **不需要**——直接开在终端里的也看得见 |
 | DSH `ctx.agents` | DSH 会话 | 进程内 agent 注册表的 `status === "running"`，精确 | 不需要 |
 | cmux hook 记录 | cmux 启动的那些 | 记录里的 **PID 是否存活** | 只在 cmux 里跑的才有 |
 
 ### 进程表怎么映射到会话
 
-1. **命令行里带会话 id** → 直接对上：Claude / Gemini 是 `--resume <id>`，Codex 是子命令 `resume <id>`。
+1. **命令行里带会话 id** → 直接对上：Claude / Gemini 是 `--resume <id>`，Codex 是 `resume <id>` 子命令，pi 是 `--session <id>`，opencode 是 `--session <id>`。
 2. **新开的、命令行里没有 id** → 用 `lsof -a -p <pid> -d cwd -Fn` 取它的工作目录，配上**该目录下最新的那个会话**——对刚启动的 agent 来说，那正是它自己建的那个。
 
-匹配的是**可执行文件名**而不是整条命令行，所以扫描进程自己（一个跑 `ps` 的 `node`）不会被误判成 agent。
+匹配的是**可执行名和第一个参数**，而且用**分隔符界定**（`(?:^|[-_.])pi(?:$|[-_.])`）而不是子串包含——否则 `apiserver` 会被当成 `pi`，`xcode` 会被当成 `codex`。只看第一个参数是为了让扫描进程自己（一个跑 `ps` 的 `node`）以及**任何后面才提到 agent 名字的参数**都不被误判。
+
+**两个踩到的坑**：
+
+- **只匹配可执行名不够。** macOS 把 shebang 脚本报成 `/bin/sh /path/to/pi-selftest`——可执行名是 `sh`，脚本路径在参数里。cmux 那种 wrapper 同理（`node /path/to/claude-wrapper`）。所以第一个参数也要看。这是我把「直接跑 `/opt/homebrew/bin/pi` 能认出来」误当成「所有启动方式都能认出来」时留下的洞。
+- **`lsof` 报的是规范路径。** macOS 上 `/tmp` 是 `/private/tmp`、`/var` 是 `/private/var`，而会话记录里存的可能是未解析的那个。直接比字符串永远不相等。现在两边都用 `realpath` 解析后再比（带缓存，只在直接匹配失败时才走这条路）。
 
 > 一开始我**只用 cmux** 判断存活，这是个错误的前提：你很多 agent 是直接开在终端里的，cmux 根本没有它们的记录。现在 cmux 降级成「补充来源」——它仍有用，因为它的记录同时带 session id 和 pid，能补上进程表推不出来的映射。
 
@@ -182,6 +210,31 @@ Codex 的索引是**先写临时文件再 rename** 重写的，写到一半被�
 每张卡底部会写明这条读数来自哪个来源，不猜、不混。
 
 **性能**：尾部读取按 `mtime + size` 缓存——agent 不写就完全不重读。所以 2 秒一次的轮询在空闲时是零磁盘开销。
+
+---
+
+## 热重载与重启
+
+客户端半边改完即时生效（插槽占用者会重新注册）。**宿主半边**有一个容易踩的坑：
+
+`ctx.connection.fetch.register` 的 owner 是 **connection 服务自己的 ctx（root）**，不是本插件的 fiber——所以那条 `/api/session-hub` 路由**比插件活得久**，而且一直带着**第一次注册时那个闭包**。
+
+早期版本因此踩了一个大的：我把被调度的 handler 存在模块作用域里，插件重载会重新求值模块、造出一个**全新的对象**，而那条老路由根本不会读它。结果是**第一代实现永远服务下去**，客户端已经更新了，宿主还在老代码上——表现就是一串 `unknown op: xxx`。
+
+现在的做法有两层：
+
+1. **注册包在本插件 ctx 的 `effect` 里**，并调用它返回的 disposer——重载时旧路由先被释放，新的一代再注册自己的。这是根治。
+2. **handler 放在进程级全局槽**（`Symbol.for("dsh-session-hub/route-state")`），路由在**调用时**才去读。这是第二道防线，兜住「上一代留下的路由」。
+
+> 但它**救不了已经冻结的进程**：被冻结那条路由的闭包已经不可达了。所以如果你撞见过 `unknown op`，需要**⌘Q 完全退出再打开**一次——关窗口不算，宿主是长驻进程（我实测过一次它连续跑了 1 天 21 小时）。
+>
+> 为了让这件事一眼可查，`unknown op` 的报错会**直接列出宿主支持哪些操作**：
+>
+> ```
+> unknown op: preview — host answers: list, status, transcript, continue, open
+> ```
+>
+> 看到这个就说明跑的是老宿主，重启即可。
 
 ---
 
@@ -258,12 +311,15 @@ DSH 会话不走 cmux——它本来就在 DSH 里，客户端直接 `uiWorkspac
 
 | 入口 | 位置 | 适合 |
 | --- | --- | --- |
-| **右侧栏 Tab**「会话」 | 右侧栏 guide 页里选，或从 tab 条的 **+** 打开 | **拖拽**——栏就在对话旁边，不遮挡输入框 |
-| 侧栏底部「会话中枢」 | Settings 上方 | 全屏总览 |
+| **右侧栏 Tab**「Agents 会话管理」 | 右侧栏 guide 页里选，或从 tab 条的 **+** 打开 | **拖拽**——栏就在对话旁边，不遮挡输入框 |
+| 侧栏底部「Agents 会话管理」 | Settings 上方 | 全屏总览 |
+
+右侧栏那个 tab 里有**两个模式**：**列表**（会话清单）和**实时**（正在跑的 agent）。
 
 1. 打开任一个入口，面板内容一致：**按项目分组的紧凑清单**（点分组标题收起/展开）、按 agent 筛选、全字段搜索、**只看运行中**。
-2. **每个分组默认只展开最新修改的 10 条顶层会话**，底部一条「查看更多 · 剩余数」每次再放 10 条，全展开后变成「收起」。
-3. **子代理会话收在父会话下面，是一棵树**，不再平铺：
+2. **项目表头悬停时出现三个控件**：**＋ 新建会话**、📌 置顶该项目、🗑 删除该项目全部会话。
+3. **打开时只有最上面那个项目是展开的，其余全部收起**——几十个项目一次性铺开会淹没一切。每个展开的分组默认只显示最新修改的 10 条顶层会话，底部一条「查看更多 · 剩余数」每次再放 10 条，全展开后变成「收起」。收起/展开的选择是**每个分组模式各记一次**，不会在你刚点开一个之后又被自动重置。
+4. **子代理会话收在父会话下面，是一棵树**，不再平铺：
 
    ```
    ▾ 🗂 work_tree_dev                                      147
@@ -277,8 +333,8 @@ DSH 会话不走 cmux——它本来就在 DSH 里，客户端直接 `uiWorkspac
    ```
 
    父行左侧的小箭头就是展开开关（带后代数量徽标）；**分页只对顶层行计数**，子会话不会把分页刷爆。
-4. 每一行就是左侧栏那种形态：**展开箭头位（固定 14px，保持标题对齐）→ 16px 前导位（agent 配色圆点，运行中的会呼吸）→ 标题 → 右侧相对时间 → 悬停时时间让位给三个图标按钮**。
-5. 行操作：
+5. 每一行就是左侧栏那种形态：**展开箭头位（固定 14px，保持标题对齐）→ 16px 前导位（agent 配色圆点，运行中的会呼吸）→ 标题 → 右侧相对时间 → 悬停时时间让位给三个图标按钮**。
+6. 行操作：
    - **拖进输入框**（↓ 图标）→ 历史成为附件，我就能读到。**在右侧栏里拖是最顺的**——不需要任何 pointer-events 技巧。
    - **在此续接**（↓ 图标）→ 把 transcript 写成 `<当前工作区>/.dsh-session-hub/<agent>-<标题>-<短id>.md`，并把一段引用提示插进**当前草稿**（光标处，失败则替换草稿）。回车发送即可。
    - **用原 agent 继续**（↗ 图标）→ 见上一节；鼠标悬停能看到**确切会执行的命令**。
@@ -322,7 +378,7 @@ dsh-session-hub/
     ├── smoke.mjs       # 宿主半边冒烟测试（读真实会话库）
     ├── delete.mjs      # 删除路径与护栏（自建 fixture，用完即清）
     ├── pins.mjs        # 置顶状态（备份并还原你真实的置顶文件）
-    └── preview.mjs     # 实时预览与 hook 汇聚（备份并还原真实的 spool）
+    └── preview.mjs     # 实时预览、hook 汇聚、进程表发现（备份并还原真实的 spool）
 ```
 
 ### 两端怎么通信
@@ -352,6 +408,7 @@ ctx.connection.fetch.register({
 | `sidebar.footer.action` | `session-hub` | 侧栏底部入口按钮 |
 | `shell.overlay` | `session-hub-panel` | 全屏面板 |
 | `shell.overlay` | `session-hub-confirm` | 删除确认弹窗（放这里，右侧栏那种会裁切溢出的容器里塞不下弹窗） |
+| `shell.overlay` | `session-hub-spawn` | 新建会话的 agent 选择器（同上原因） |
 | `sidebar.right.pane.tab` | `dsh-session-hub` | **右侧栏 tab 的 body**——「会话 / 实时」两个模式（会话作用域，自带 `inputActions`） |
 | `sidebar.right.pane.tab.title` | `dsh-session-hub` | 该 tab 的 chip 内容 |
 | `conversation.composer.dock` | `session-hub-bridge` | 会话作用域、不渲染，只把当前 composer 的 `inputActions` 发布给全屏面板 |
@@ -404,7 +461,7 @@ node test/reload.mjs   # 热重载必须真的换掉宿主实现（两代模块�
 node test/smoke.mjs    # 采集 / 标题 / transcript / 实时状态 / 树的完整性
 node test/delete.mjs   # 删除路径、批量删除与三条护栏
 node test/pins.mjs     # 置顶的读写、两种置顶互不干扰、删除时清理
-node test/preview.mjs  # 实时预览的推导、hook 覆盖与 sink 的输入校验
+node test/preview.mjs  # 实时预览的推导、hook 覆盖、sink 的输入校验，以及「终端里直接起的 agent」能否被进程表发现
 ```
 
 ### 为什么有 reload 测试
@@ -433,7 +490,7 @@ node test/preview.mjs  # 实时预览的推导、hook 覆盖与 sink 的输入�
 
 实测渲染出 **56 个分组、167 行、2 个展开箭头、167 个置顶开关**——167 行正好是「每组前 10 条 + 子代理行」的分页结果，2 个箭头正好是两个有子代理的会话。
 
-它同时也验证了：`apply()` 恰好注册六个组件（多一个少一个都失败）、桥与确认弹窗在无状态时确实渲染 `null`、以及**没有一行标题渲染出 `undefined`**。它还**渲染实时模式**（用一个合成的 preview 响应，不依赖这台机器当下在跑什么），断言那张卡带着**两个动作**、**可拖拽**、并且 IN / OUT / 来源三者都渲染出来。
+它同时也验证了：`apply()` 恰好注册七个组件（多一个少一个都失败）、桥与确认弹窗与新建会话选择器在无状态时确实渲染 `null`、以及**没有一行标题渲染出 `undefined`**。它还**渲染实时模式**（用一个合成的 preview 响应，不依赖这台机器当下在跑什么），断言那张卡带着**两个动作**、**可拖拽**、并且 IN / OUT / 来源三者都渲染出来；**每个项目表头恰好三个控件**（新建会话 / 置顶 / 删除）且都带 tooltip、以及**打开时恰好一个项目是展开的**（其余收起的那个默认）。
 
 `smoke` 按 Cordis 的真实调用方式驱动宿主半边（`apply(ctx)` → 抓取注册的路由 → 发真实 `Request`），断言：清单非空且按时间倒序、每张卡字段完整（含 `running`/`subagent` 布尔与 `live` 证据）、每个有会话的 agent 都能产出含 `## User` 的 transcript、**`status` 轮询覆盖清单里的每一个 key 且与 `runningCount` 一致**、**任何被判为「运行中」的卡都必须给出证据来源**、`continue` 必须落在当前工作区内、未知 key/op 返回结构化错误、重复 `apply()` 不因路由已注册而抛出。
 

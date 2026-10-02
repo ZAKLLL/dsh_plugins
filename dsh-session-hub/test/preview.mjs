@@ -16,9 +16,9 @@
  */
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -65,6 +65,18 @@ const SPOOL_DIR = join(DSH_HOME, "session-hub");
 const SPOOL = join(SPOOL_DIR, "hooks.jsonl");
 const SLUG = join(DSH_ROOT, `-dsh-session-hub-${STAMP}`);
 
+// A pi session started straight from a terminal: the process table is what has
+// to find it, since nothing about pi cooperates.
+const PI_ROOT = join(homedir(), ".pi", "agent", "sessions");
+const PI_ID = `01a0${Date.now().toString(16).slice(-16)}`;
+const PI_WORKSPACE = join(tmpdir(), `dsh-session-hub-pi-${STAMP}`);
+const PI_DIR = join(PI_ROOT, `-dsh-session-hub-${STAMP}`);
+const PI_FILE = join(PI_DIR, `${new Date().toISOString().replace(/[:.]/g, "-")}_${PI_ID}.jsonl`);
+const PI_INPUT = "pi 收到的输入";
+const PI_OUTPUT = "pi 目前的产出";
+const PI_SCRIPT = join(PI_WORKSPACE, "pi-selftest");
+let piChild = null;
+
 let spoolBackup = null;
 let spoolExisted = true;
 
@@ -76,8 +88,29 @@ function fixture(id, cwd, input, output) {
   return zlib.zstdCompressSync(Buffer.from(`${JSON.stringify(header)}\n${JSON.stringify(user)}\n${JSON.stringify(assistant)}\n`, "utf8"));
 }
 
+/** One pi session: a header plus a single user/assistant pair. */
+function piFixture(id, cwd, input, output) {
+  return (
+    [
+      JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd }),
+      JSON.stringify({ type: "message", id: "m1", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: input }] } }),
+      JSON.stringify({ type: "message", id: "m2", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: output }] } }),
+    ].join("\n") + "\n"
+  );
+}
+
 async function cleanup() {
+  if (piChild !== null) {
+    try {
+      piChild.kill("SIGKILL");
+    } catch {
+      /* Already gone. */
+    }
+    piChild = null;
+  }
   await rm(SLUG, { recursive: true, force: true });
+  await rm(PI_DIR, { recursive: true, force: true });
+  await rm(PI_WORKSPACE, { recursive: true, force: true });
   try {
     if (spoolExisted && spoolBackup !== null) await writeFile(SPOOL, spoolBackup, "utf8");
     else {
@@ -164,6 +197,31 @@ try {
   const after = (await readFile(SPOOL, "utf8")).trim().split("\n").length;
   assert.equal(after, before, "a record without an agent and session must not be written");
   console.log("preview: an unattributable report is dropped");
+
+  // ---- an agent started straight from a terminal is found -------------
+  // This is the shape the process table exists for: a real process whose name
+  // matches an agent, whose command line names no session, running in the
+  // fixture's workspace. Nothing about pi cooperates here.
+  await mkdir(PI_DIR, { recursive: true });
+  await mkdir(PI_WORKSPACE, { recursive: true });
+  await writeFile(PI_FILE, piFixture(PI_ID, PI_WORKSPACE, PI_INPUT, PI_OUTPUT), "utf8");
+  await writeFile(PI_SCRIPT, "#!/bin/sh\nsleep 60\n", { mode: 0o755 });
+  piChild = spawn(PI_SCRIPT, [], { cwd: PI_WORKSPACE, stdio: "ignore" });
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+
+  const scanned = await call({ op: "list", refresh: true });
+  const piCard = scanned.sessions.find((session) => session.agent === "pi" && session.sessionId === PI_ID);
+  assert.ok(piCard, "the pi fixture must be listed");
+  assert.equal(piCard.title, PI_INPUT, "pi records no title, so its first human message is it");
+  assert.equal(piCard.running, true, "a pi started from a terminal must be found through the process table");
+  assert.equal(piCard.live.source, "process", "and the evidence must be the process, not a hook record");
+  console.log("preview: a terminal-started pi is detected through the process table");
+
+  const piPreview = (await call({ op: "preview" })).sessions.find((session) => session.key === piCard.key);
+  assert.ok(piPreview, "the running pi must appear in the live preview");
+  assert.equal(piPreview.input, PI_INPUT, "the pi preview must read its input from the store");
+  assert.equal(piPreview.output, PI_OUTPUT, "the pi preview must read its latest output from the store");
+  console.log("preview: the pi preview carries its input and latest output");
 
   console.log("\npreview test: all assertions passed");
 } finally {

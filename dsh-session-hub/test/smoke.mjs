@@ -64,7 +64,10 @@ for (const source of list.body.sources) {
 // Every card must carry the fields the panel renders.
 for (const card of list.body.sessions) {
   assert.equal(typeof card.key, "string");
-  assert.ok(["dsh", "claude", "codex", "gemini"].includes(card.agent), `unknown agent ${card.agent}`);
+  assert.ok(
+    ["dsh", "claude", "codex", "gemini", "pi", "opencode"].includes(card.agent),
+    `unknown agent ${card.agent}`,
+  );
   assert.equal(typeof card.title, "string");
   assert.ok(card.title.length > 0, `empty title for ${card.key}`);
   assert.equal(typeof card.file, "string");

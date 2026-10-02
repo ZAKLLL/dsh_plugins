@@ -261,6 +261,8 @@ window.__ModuleLoader__.load({
 .sh-agent-dot-claude{background:#d97757;color:#d97757}
 .sh-agent-dot-codex{background:var(--color-green-500);color:var(--color-green-500)}
 .sh-agent-dot-gemini{background:#7b6cff;color:#7b6cff}
+.sh-agent-dot-pi{background:#e879a6;color:#e879a6}
+.sh-agent-dot-opencode{background:#06b6d4;color:#06b6d4}
 .sh-dot-running{animation:sh-pulse 2.2s ease-out infinite}
 @keyframes sh-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 55%,transparent)}70%{box-shadow:0 0 0 5px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .sh-row-title{text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14px;line-height:20px;flex:1;overflow:hidden}
@@ -284,6 +286,8 @@ window.__ModuleLoader__.load({
 .sh-dialog-danger{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
 .sh-dialog-check{color:var(--dsw-alias-label-primary);cursor:pointer;align-items:center;gap:7px;font-size:12px;line-height:18px;display:flex}
 .sh-dialog-check input{accent-color:var(--dsw-alias-state-error-primary);margin:0}
+.sh-spawn-list{flex-direction:column;gap:5px;display:flex}
+.sh-spawn-btn{justify-content:flex-start;gap:8px;padding:8px 11px;font-size:13px}
 .sh-dialog-actions{justify-content:flex-end;gap:8px;display:flex}
 .sh-danger{color:var(--dsw-alias-state-error-primary)}
 .sh-danger-strong,.sh-danger-strong:hover:enabled{background:var(--dsw-alias-state-error-primary);border-color:transparent;color:var(--dsw-alias-label-primary-foreground,#fff)}
@@ -379,7 +383,12 @@ window.__ModuleLoader__.load({
       });
       if (!response.ok) throw new Error(`session-hub ${op}: HTTP ${response.status}`);
       const body = await response.json().catch(() => null);
-      if (body?.ok !== true) throw new Error(body?.error ?? `session-hub ${op} failed`);
+      if (body?.ok !== true) {
+        // A Host that does not know this operation is a stale generation, so the
+        // message names the operations it does know.
+        const supported = Array.isArray(body?.supported) ? ` — host answers: ${body.supported.join(", ")}` : "";
+        throw new Error(`${body?.error ?? `session-hub ${op} failed`}${supported}`);
+      }
       return body;
     }
 
@@ -517,6 +526,25 @@ window.__ModuleLoader__.load({
         h("path", { d: "M4.2 4.4l.6 8.1c.03.44.4.79.85.79h4.7c.45 0 .82-.35.85-.79l.6-8.1" }),
         h("path", { d: "M6.7 7v4M9.3 7v4" }));
     }
+
+    function PlusIcon() {
+      return h("svg", {
+        viewBox: "0 0 16 16", width: 14, height: 14, fill: "none", stroke: "currentColor",
+        strokeWidth: 1.6, strokeLinecap: "round", "aria-hidden": true,
+      },
+        h("path", { d: "M8 3.4v9.2" }),
+        h("path", { d: "M3.4 8h9.2" }));
+    }
+
+    /** The agents a project can start a session with, in a stable order. */
+    const SPAWNABLE = [
+      { id: "dsh", label: "DSH" },
+      { id: "claude", label: "Claude Code" },
+      { id: "codex", label: "Codex" },
+      { id: "gemini", label: "Gemini CLI" },
+      { id: "pi", label: "pi" },
+      { id: "opencode", label: "opencode" },
+    ];
 
     /**
      * A push-pin.
@@ -972,6 +1000,21 @@ window.__ModuleLoader__.load({
           });
         }, [visible, group, pinnedSessions, pinnedProjects]);
 
+        /**
+         * Open on the first group only.
+         *
+         * A corpus of hundreds of sessions across dozens of projects is noise if
+         * every project unfolds at once, so everything below the topmost group
+         * starts collapsed. Applied once per grouping mode — never on every
+         * recompute, which would fight a person who just opened something.
+         */
+        const defaultedFor = React.useRef(null);
+        React.useEffect(() => {
+          if (groups.length === 0 || defaultedFor.current === group) return;
+          defaultedFor.current = group;
+          setCollapsed(new Set(groups.slice(1).map((bucket) => bucket.key ?? "__flat")));
+        }, [groups, group]);
+
         const runningCount = React.useMemo(
           () => sessions.reduce((total, session) => total + (runningKeys.has(session.key) ? 1 : 0), 0),
           [sessions, runningKeys],
@@ -1011,6 +1054,12 @@ window.__ModuleLoader__.load({
           },
           [runningKeys],
         );
+
+        /** Only a project group has a directory to start a session in. */
+        const onSpawnSession = React.useCallback((bucket) => {
+          if (bucket.path === null || bucket.path === undefined) return;
+          spawning.set({ cwd: bucket.path, label: bucket.label });
+        }, []);
 
         const toggleTree = React.useCallback((key) => {
           setExpandedTree((current) => {
@@ -1223,6 +1272,19 @@ window.__ModuleLoader__.load({
                             h(
                               "span",
                               { className: "sh-group-actions" },
+                              bucket.path !== null &&
+                                bucket.path !== undefined &&
+                                h(
+                                  "button",
+                                  {
+                                    type: "button",
+                                    className: "sh-icon-btn",
+                                    title: t("newSession"),
+                                    "aria-label": t("newSession"),
+                                    onClick: () => onSpawnSession(bucket),
+                                  },
+                                  h(PlusIcon),
+                                ),
                               h(
                                 "button",
                                 {
@@ -1518,7 +1580,122 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return { Overlay, SidebarTab, DeleteDialog };
+      /**
+       * Start a DSH session in a project.
+       *
+       * `openWorkspace` is the DSH-native verb: it reuses a blank session in
+       * that workspace or creates one, then brings it on screen. The workspace
+       * is looked up by path first, so a project that already exists is not
+       * registered twice.
+       */
+      async function startDshSession(cwd, faces) {
+        const uiWorkspace = faces.uiWorkspace();
+        const workspaces = faces.workspaces();
+        if (uiWorkspace === null || workspaces === null) throw new Error(t("noWorkspace"));
+
+        let workspaceId;
+        const items = workspaces.list?.getSnapshot?.().items;
+        if (Array.isArray(items)) {
+          workspaceId = items.find((item) => item.path === cwd)?.workspaceId;
+        }
+        if (workspaceId === undefined && typeof workspaces.create === "function") {
+          const view = await workspaces.create({ path: cwd });
+          workspaceId = view?.workspaceId ?? view?.id;
+        }
+        if (workspaceId === undefined) throw new Error(`no DSH workspace for ${cwd}`);
+        await uiWorkspace.openWorkspace(workspaceId);
+      }
+
+      /**
+       * The "start a session here" picker.
+       *
+       * DSH owns its workspace registry, so a DSH session is created through the
+       * client; the command-line agents are launched by the Host in a terminal
+       * at the project directory.
+       */
+      function SpawnDialog() {
+        const state = React.useSyncExternalStore(spawning.subscribe, spawning.get, spawning.get);
+        const [busy, setBusy] = React.useState(false);
+        const [error, setError] = React.useState(null);
+
+        const close = React.useCallback(() => {
+          if (busy) return;
+          spawning.set(null);
+        }, [busy]);
+
+        useEscape(state !== null, close);
+        React.useEffect(() => {
+          setBusy(false);
+          setError(null);
+        }, [state]);
+
+        if (state === null) return null;
+
+        const start = async (agent) => {
+          setBusy(true);
+          setError(null);
+          try {
+            if (agent === "dsh") {
+              await startDshSession(state.cwd, faces);
+              say(t("startedDsh"));
+            } else {
+              const result = await hub("spawn", { agent, cwd: state.cwd });
+              if (result.ok !== true) throw new Error(result.error ?? "spawn failed");
+              const label = SPAWNABLE.find((entry) => entry.id === agent)?.label ?? agent;
+              say(t("started", { agent: label }));
+            }
+            spawning.set(null);
+          } catch (caught) {
+            setError(String(caught?.message ?? caught));
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        return h(
+          "div",
+          { className: "sh-backdrop", onClick: close },
+          h(
+            "div",
+            {
+              className: "sh-dialog",
+              role: "dialog",
+              "aria-modal": "true",
+              "aria-label": t("spawnTitle"),
+              onClick: (event) => event.stopPropagation(),
+            },
+            h("div", { className: "sh-dialog-title" }, t("spawnTitle")),
+            h(
+              "div",
+              { className: "sh-dialog-session" },
+              h("span", { className: "sh-group-folder", "aria-hidden": true }, h(FolderIcon)),
+              h("span", { className: "sh-row-title" }, state.label),
+            ),
+            h("div", { className: "sh-dialog-path" }, state.cwd),
+            h("div", { className: "sh-dialog-warn" }, t("spawnBody", { project: state.label })),
+            h(
+              "div",
+              { className: "sh-spawn-list" },
+              SPAWNABLE.map((agent) =>
+                h(
+                  "button",
+                  { key: agent.id, type: "button", className: "sh-btn sh-spawn-btn", disabled: busy, onClick: () => start(agent.id) },
+                  h("span", { className: `sh-agent-dot sh-agent-dot-${agent.id}`, "aria-hidden": true }),
+                  h("span", null, agent.label),
+                ),
+              ),
+            ),
+            error !== null && h("div", { className: "sh-dialog-danger" }, error),
+            h(
+              "div",
+              { className: "sh-dialog-actions" },
+              h("button", { type: "button", className: "sh-btn", disabled: busy, onClick: close }, t("cancel")),
+            ),
+          ),
+        );
+      }
+
+      return { Overlay, SidebarTab, DeleteDialog, SpawnDialog };
     }
 
     /**
