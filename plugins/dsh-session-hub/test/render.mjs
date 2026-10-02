@@ -47,6 +47,13 @@ function useCell() {
 }
 
 function renderComponent(type, props) {
+  // React refuses an element whose type is neither a tag name nor a component,
+  // and a component that crashes here is exactly what the Host reports as an
+  // abdicated slot occupant (`active: false`). Without this check the harness
+  // cheerfully rendered `h({...})` and hid a real crash.
+  if (typeof type !== "string" && typeof type !== "function") {
+    throw new TypeError(`invalid element type: ${Object.prototype.toString.call(type)}`);
+  }
   const parent = frames.length > 0 ? frames[frames.length - 1].path : "";
   const path = `${parent}/${type.name || "anon"}`;
   const occurrence = (pathCounts.get(path) ?? 0) + 1;

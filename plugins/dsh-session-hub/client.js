@@ -832,6 +832,7 @@ window.__ModuleLoader__.load({
             h("span", { className: "sh-at", "aria-hidden": true }, "@"),
           ),
           h(
+            "button",
             { type: "button", className: "sh-icon-btn", disabled: busy, title: t("continue"), "aria-label": t("continue"), onClick: run(() => onContinue(card)) },
             h(ContinueIcon),
           ),
