@@ -385,16 +385,24 @@ window.__ModuleLoader__.load({
 .sh-row-title-open{cursor:pointer}
 .sh-row-title-open:hover{text-decoration:underline}
 .sh-row-title-open:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:1px;border-radius:var(--dsw-radius-xs)}
-.sh-read{max-width:min(760px,92vw);width:100%;max-height:84vh;flex-direction:column;display:flex;overflow:hidden}
-.sh-read-head{align-items:center;gap:8px;padding-bottom:8px;display:flex;min-width:0;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.sh-read{max-width:min(720px,92vw);width:100%;max-height:84vh;flex-direction:column;padding:0;display:flex;overflow:hidden}
+.sh-read-head{align-items:center;gap:8px;padding:12px 16px;display:flex;min-width:0;flex:none;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .sh-read-title{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.sh-read-body{flex:1;min-height:0;overflow-y:auto;flex-direction:column;gap:10px;padding:10px 2px 2px;display:flex}
-.sh-read-note{color:var(--dsw-alias-label-tertiary);font-size:11px}
-.sh-turn{flex-direction:column;gap:3px;display:flex}
-.sh-turn-role{color:var(--dsw-alias-label-tertiary);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
-.sh-turn-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:18px}
-.sh-turn-user .sh-turn-text{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-md);padding:6px 9px}
+.sh-read-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;flex-direction:column;gap:14px;padding:14px 16px 18px;display:flex}
+.sh-read-note{color:var(--dsw-alias-label-tertiary);font-size:11px;text-align:center}
+.sh-turn{flex-direction:column;gap:5px;display:flex;min-width:0}
+.sh-turn-head{align-items:center;gap:6px;display:flex}
+.sh-turn-dot{border-radius:50%;flex:none;width:6px;height:6px}
+.sh-turn-dot-user{background:var(--color-blue-500)}
+.sh-turn-dot-assistant{background:var(--color-green-500)}
+.sh-turn-who{color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.sh-turn-body{flex-direction:column;gap:5px;min-width:0;display:flex;padding-left:12px}
+.sh-turn-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;line-height:19px}
+.sh-turn-user .sh-turn-body{border-left:2px solid var(--color-blue-500);padding-left:11px}
+.sh-turn-user .sh-turn-text{color:var(--dsw-alias-label-primary)}
+.sh-turn-assistant .sh-turn-body{border-left:2px solid var(--dsw-alias-border-l2);padding-left:11px}
 .sh-turn-assistant .sh-turn-text{color:var(--dsw-alias-label-secondary)}
+.sh-turn-tool{align-self:flex-start;max-width:100%;background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:16px;padding:1px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sh-tile-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
 .sh-tile-badge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;line-height:13px;padding:0 4px}
 .sh-tile-badge-wait{color:var(--dsw-alias-state-error-primary)}
@@ -512,6 +520,34 @@ window.__ModuleLoader__.load({
       if (session.agent === "dsh") return t("openInDsh");
       if (typeof session.surfaceId === "string" && session.surfaceId !== "") return t("focusIn", { terminal: "cmux" });
       return [t("resumeIn", { terminal: "cmux" }), session.resumeCommand].filter(Boolean).join(" — ");
+    }
+
+    /**
+     * Break one turn into what was said and what was run.
+     *
+     * The transcripts carry five times as many `> tool: …` lines as turns — 216
+     * against 43 in one session here — and interleaved with the prose they turn
+     * the reader into a wall of call names. Pulling them out is the difference
+     * between reading a conversation and reading a log.
+     */
+    function turnParts(text) {
+      const blocks = [];
+      let prose = null;
+      for (const line of String(text ?? "").split("\n")) {
+        const call = /^>\s*tool:\s*(.*)$/.exec(line);
+        if (call !== null) {
+          if (prose !== null) {
+            blocks.push({ kind: "text", text: prose.join("\n").trim() });
+            prose = null;
+          }
+          blocks.push({ kind: "tool", text: call[1].replace(/^`|`$/g, "") });
+          continue;
+        }
+        if (prose === null) prose = [];
+        prose.push(line);
+      }
+      if (prose !== null) blocks.push({ kind: "text", text: prose.join("\n").trim() });
+      return blocks.filter((block) => block.kind === "tool" || block.text !== "");
     }
 
     /** A running time, kept coarse: 3s / 4m / 2h 10m / 1d 3h. */
@@ -1722,14 +1758,32 @@ window.__ModuleLoader__.load({
         const turns =
           data === null
             ? null
-            : data.messages.map((message, index) =>
-                h(
+            : data.messages.map((message, index) => {
+                const who = message.role === "user" ? t("you") : data.agentLabel;
+                return h(
                   "div",
                   { key: index, className: `sh-turn sh-turn-${message.role}` },
-                  h("div", { className: "sh-turn-role" }, message.role === "user" ? t("you") : data.agentLabel),
-                  h("div", { className: "sh-turn-text" }, message.text),
-                ),
-              );
+                  h(
+                    "div",
+                    { className: "sh-turn-head" },
+                    h("span", { className: `sh-turn-dot sh-turn-dot-${message.role}`, "aria-hidden": true }),
+                    h("span", { className: "sh-turn-who" }, who),
+                  ),
+                  h(
+                    "div",
+                    { className: "sh-turn-body" },
+                    turnParts(message.text).map((block, part) =>
+                      block.kind === "tool"
+                        ? h(
+                            "div",
+                            { key: part, className: "sh-turn-tool" },
+                            h("span", { className: "sh-turn-tool-name" }, block.text),
+                          )
+                        : h("div", { key: part, className: "sh-turn-text" }, block.text),
+                    ),
+                  ),
+                );
+              });
 
         return h(
           "div",
@@ -1746,6 +1800,7 @@ window.__ModuleLoader__.load({
             h(
               "div",
               { className: "sh-read-head" },
+              h("span", { className: `sh-agent-dot sh-agent-dot-${data === null ? "dsh" : data.agent}`, "aria-hidden": true }),
               h("span", { className: "sh-lp-agent" }, data === null ? "" : data.agentLabel),
               h("span", { className: "sh-read-title" }, state.title),
               h("span", { className: "sh-spacer" }),

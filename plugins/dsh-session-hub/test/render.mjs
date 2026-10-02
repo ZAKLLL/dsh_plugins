@@ -588,36 +588,59 @@ assert.ok(
 console.log(`live: 1 tile, 1 detail panel, ${liveButtons.length} actions, drag enabled, source stated`);
 
 // ---- the reader -----------------------------------------------------
-// A row title is the way in. The harness cannot dispatch a click, but it can
-// call the handler the real element carries.
-const titleNode = flatten(second.tree).find(
-  (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-row-title-open"),
-);
-assert.ok(titleNode, "a row title must open the reader");
-assert.equal(typeof titleNode.props.onClick, "function");
-assert.equal(typeof titleNode.props.title, "string", "and say so on hover");
-titleNode.props.onClick();
+// Transcripts carry far more `> tool:` lines than turns (216 against 43 in one
+// session here), so the reader must pull them out of the prose — otherwise it is
+// a wall of call names. Find a row that actually has some.
+// Transcripts carry far more `> tool:` lines than turns (216 against 43 in one
+// session here), so the reader must lift them out of the prose — otherwise it is
+// a wall of call names. A rendered row does not carry its key, so walk the rows
+// until one whose turns actually contain a tool call is found.
+let reader = null;
+let sawTitle = false;
+for (const candidate of rows.slice(0, 8)) {
+  const titleNode = flatten(candidate).find(
+    (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-row-title-open"),
+  );
+  if (titleNode === undefined) continue;
+  if (!sawTitle) {
+    assert.equal(typeof titleNode.props.onClick, "function", "a row title must open the reader");
+    assert.equal(typeof titleNode.props.title, "string", "and say so on hover");
+    sawTitle = true;
+  }
 
-let reader = render(Preview, {});
-for (const effect of reader.effects) {
-  const cleanup = effect();
-  if (typeof cleanup === "function") cleanups.push(cleanup);
-}
-for (let attempt = 0; attempt < 40; attempt += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  reader = render(Preview, {});
-  if (hostElements(reader.tree, "sh-turn").length > 0) break;
+  titleNode.props.onClick();
+  let view = render(Preview, {});
+  for (const effect of view.effects) {
+    const cleanup = effect();
+    if (typeof cleanup === "function") cleanups.push(cleanup);
+  }
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    view = render(Preview, {});
+    if (hostElements(view.tree, "sh-turn").length > 0) break;
+  }
+  reader = view;
+  if (hostElements(view.tree, "sh-turn-tool").length > 0) break;
 }
 
+assert.ok(sawTitle, "a row title must open the reader");
+assert.ok(reader !== null, "the reader must render");
 const turns = hostElements(reader.tree, "sh-turn");
 assert.ok(turns.length > 0, "the reader must render the session's turns");
 assert.equal(hostElements(reader.tree, "sh-read-body").length, 1, "and scroll inside its own body");
 assert.ok(hostElements(reader.tree, "sh-turn-user").length > 0, "user turns must be marked as such");
-assert.ok(hostElements(reader.tree, "sh-turn-assistant").length > 0, "and so must the agent's");
-for (const role of hostElements(reader.tree, "sh-turn-role").map(textOf)) {
-  assert.ok(role.length > 0, "every turn must name its speaker");
+for (const who of hostElements(reader.tree, "sh-turn-who").map(textOf)) {
+  assert.ok(who.length > 0, "every turn must name its speaker");
 }
-console.log(`reader: ${turns.length} turns, ${hostElements(reader.tree, "sh-turn-user").length} from the user`);
+for (const dot of hostElements(reader.tree, "sh-turn-dot")) {
+  const cls = String(dot.props.className);
+  assert.ok(cls.includes("sh-turn-dot-user") || cls.includes("sh-turn-dot-assistant"), "each speaker line carries its role dot");
+}
+const chips = hostElements(reader.tree, "sh-turn-tool");
+assert.ok(chips.length > 0, "tool calls must be lifted out of the prose");
+const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
+assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
+console.log(`reader: ${turns.length} turns, ${chips.length} tool chips lifted out of the prose`);
 
 for (const cleanup of cleanups) cleanup();
 globalThis.fetch = realFetch;
