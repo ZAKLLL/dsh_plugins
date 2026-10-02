@@ -429,6 +429,28 @@ window.__ModuleLoader__.load({
 .sh-turn-at{color:var(--dsw-alias-label-caption,var(--dsw-alias-label-tertiary));flex:none;font-variant-numeric:tabular-nums;font-size:10px}
 .sh-turn-body{flex-direction:column;gap:5px;min-width:0;display:flex;padding-left:12px}
 .sh-turn-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;line-height:19px}
+.sh-turn-text>.sh-md-p:first-child{margin-top:0}
+.sh-turn-text>.sh-md-p:last-child{margin-bottom:0}
+.sh-md-p{margin:6px 0;white-space:pre-wrap}
+.sh-md-h{color:var(--dsw-alias-label-primary);font-weight:600;margin:10px 0 4px}
+.sh-md-h1{font-size:15px}
+.sh-md-h2{font-size:14px}
+.sh-md-h3{font-size:13px}
+.sh-md-h4,.sh-md-h5,.sh-md-h6{color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.sh-md-code{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;padding:1px 4px}
+.sh-md-pre{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);margin:7px 0;overflow:hidden}
+.sh-md-lang{color:var(--dsw-alias-label-secondary);display:block;font-size:10px;padding:3px 8px}
+.sh-md-pre>pre{margin:0;overflow-x:auto;padding:7px 9px;white-space:pre}
+.sh-md-pre code{background:0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;padding:0}
+.sh-md-list{margin:5px 0;padding-left:18px}
+.sh-md-list>li{margin:2px 0}
+.sh-md-quote{border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);margin:6px 0;padding-left:9px;white-space:pre-wrap}
+.sh-md-hr{border:0;border-top:1px solid var(--dsw-alias-border-l1);margin:9px 0}
+.sh-md-table-wrap{margin:7px 0;overflow-x:auto}
+.sh-md-table{border-collapse:collapse;font-size:11.5px;width:100%}
+.sh-md-table th,.sh-md-table td{border:1px solid var(--dsw-alias-border-l1);padding:3px 7px;text-align:left;vertical-align:top}
+.sh-md-table th{background:var(--dsw-alias-bg-layer-2);font-weight:600}
+.sh-md-link{color:var(--dsw-alias-brand-primary);text-decoration:underline}
 .sh-turn-user .sh-turn-body{border-left:2px solid var(--color-blue-500);padding-left:11px}
 .sh-turn-user .sh-turn-text{color:var(--dsw-alias-label-primary)}
 .sh-turn-assistant .sh-turn-body{border-left:2px solid var(--dsw-alias-border-l2);padding-left:11px}
@@ -577,6 +599,178 @@ window.__ModuleLoader__.load({
         current.steps.push(message);
       }
       return turns;
+    }
+
+    /** A link we are willing to make clickable. */
+    const MD_SCHEME = /^(https?:\/\/|mailto:)/i;
+
+    /**
+     * Inline markdown, as React nodes.
+     *
+     * Deliberately nodes rather than an HTML string: a transcript holds whatever
+     * the session quoted, and building elements means none of it can ever become
+     * markup. Same reason a link with any other scheme is shown as plain text.
+     */
+    function mdInline(text, keyBase) {
+      const nodes = [];
+      const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(~~[^~]+~~)|(\*[^*]+\*)|(_[^_]+_)|(\[[^\]]+\]\([^)\s]+\))/g;
+      let last = 0;
+      let index = 0;
+      let match = pattern.exec(text);
+      while (match !== null) {
+        if (match.index > last) nodes.push(text.slice(last, match.index));
+        const token = match[0];
+        const key = `${keyBase}-${index++}`;
+        if (token.startsWith("`")) {
+          nodes.push(h("code", { key, className: "sh-md-code" }, token.slice(1, -1)));
+        } else if (token.startsWith("**")) {
+          nodes.push(h("strong", { key }, token.slice(2, -2)));
+        } else if (token.startsWith("~~")) {
+          nodes.push(h("del", { key }, token.slice(2, -2)));
+        } else if (token.startsWith("*") || token.startsWith("_")) {
+          nodes.push(h("em", { key }, token.slice(1, -1)));
+        } else {
+          const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(token);
+          if (link === null) nodes.push(token);
+          else if (!MD_SCHEME.test(link[2])) nodes.push(link[1]);
+          else {
+            nodes.push(
+              h("a", { key, className: "sh-md-link", href: link[2], target: "_blank", rel: "noreferrer" }, link[1]),
+            );
+          }
+        }
+        last = match.index + token.length;
+        match = pattern.exec(text);
+      }
+      if (last < text.length) nodes.push(text.slice(last));
+      return nodes;
+    }
+
+    /**
+     * Block markdown, as React nodes.
+     *
+     * Covers what agents actually write: fenced code, headings, lists, quotes,
+     * tables, rules, paragraphs. Anything it does not recognise stays as text,
+     * so a construct it does not know is merely unstyled rather than lost.
+     */
+    function mdBlocks(text) {
+      const lines = String(text ?? "").split("\n");
+      const out = [];
+      let i = 0;
+      let key = 0;
+      const next = () => `md${key++}`;
+      while (i < lines.length) {
+        const line = lines[i];
+
+        const fence = /^\s*(```|~~~)\s*([\w+#.-]*)\s*$/.exec(line);
+        if (fence !== null) {
+          const body = [];
+          i += 1;
+          while (i < lines.length && !/^\s*(```|~~~)\s*$/.test(lines[i])) {
+            body.push(lines[i]);
+            i += 1;
+          }
+          if (i < lines.length) i += 1;
+          const id = next();
+          out.push(
+            h(
+              "div",
+              { key: id, className: "sh-md-pre" },
+              fence[2] !== "" && h("span", { className: "sh-md-lang" }, fence[2]),
+              h("pre", {}, h("code", {}, body.join("\n"))),
+            ),
+          );
+          continue;
+        }
+
+        const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (heading !== null) {
+          const id = next();
+          out.push(h("div", { key: id, className: `sh-md-h sh-md-h${heading[1].length}` }, mdInline(heading[2], id)));
+          i += 1;
+          continue;
+        }
+
+        if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+          out.push(h("hr", { key: next(), className: "sh-md-hr" }));
+          i += 1;
+          continue;
+        }
+
+        // A table needs its separator row to be a table at all.
+        if (line.includes("|") && /^\s*\|?[\s:|-]*\|[\s:|-]*$/.test(lines[i + 1] ?? "") && /-/.test(lines[i + 1] ?? "")) {
+          const cells = (row) =>
+            row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((cell) => cell.trim());
+          const head = cells(line);
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+            rows.push(cells(lines[i]));
+            i += 1;
+          }
+          const id = next();
+          out.push(
+            h(
+              "div",
+              { key: id, className: "sh-md-table-wrap" },
+              h(
+                "table",
+                { className: "sh-md-table" },
+                h("thead", {}, h("tr", {}, head.map((cell, c) => h("th", { key: c }, mdInline(cell, `${id}-h${c}`))))),
+                h(
+                  "tbody",
+                  {},
+                  rows.map((row, r) =>
+                    h("tr", { key: r }, row.map((cell, c) => h("td", { key: c }, mdInline(cell, `${id}-r${r}c${c}`)))),
+                  ),
+                ),
+              ),
+            ),
+          );
+          continue;
+        }
+
+        const bullet = /^\s*([-*+])\s+(.*)$/.exec(line);
+        const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+        if (bullet !== null || numbered !== null) {
+          const ordered = numbered !== null;
+          const items = [];
+          while (i < lines.length) {
+            const one = ordered ? /^\s*\d+[.)]\s+(.*)$/.exec(lines[i]) : /^\s*[-*+]\s+(.*)$/.exec(lines[i]);
+            if (one === null) break;
+            const id = next();
+            items.push(h("li", { key: id }, mdInline(one[1], id)));
+            i += 1;
+          }
+          out.push(h(ordered ? "ol" : "ul", { key: next(), className: "sh-md-list" }, items));
+          continue;
+        }
+
+        if (/^\s*>\s?/.test(line)) {
+          const quoted = [];
+          while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+            quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+            i += 1;
+          }
+          const id = next();
+          out.push(h("div", { key: id, className: "sh-md-quote" }, mdInline(quoted.join("\n"), id)));
+          continue;
+        }
+
+        if (line.trim() === "") {
+          i += 1;
+          continue;
+        }
+
+        const paragraph = [];
+        while (i < lines.length && lines[i].trim() !== "" && !/^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```|~~~)/.test(lines[i])) {
+          paragraph.push(lines[i]);
+          i += 1;
+        }
+        const id = next();
+        out.push(h("p", { key: id, className: "sh-md-p" }, mdInline(paragraph.join("\n"), id)));
+      }
+      return out;
     }
 
     /**
@@ -1900,7 +2094,7 @@ window.__ModuleLoader__.load({
                       turnParts(message.text).map((block, part) =>
                         block.kind === "tool"
                           ? h("div", { key: part, className: "sh-turn-tool" }, h("span", { className: "sh-turn-tool-name" }, block.text))
-                          : h("div", { key: part, className: "sh-turn-text" }, block.text),
+                          : h("div", { key: part, className: "sh-turn-text" }, mdBlocks(block.text)),
                       ),
                     ),
                   );

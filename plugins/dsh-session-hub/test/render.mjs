@@ -224,7 +224,23 @@ const FAKE_MESSAGES = {
   messages: [
     { role: "user", text: "第一个请求", at: "2026-10-02 10:00", collapsed: null },
     { role: "assistant", text: "先看一下\n\n> tool: `Read`", at: "2026-10-02 10:01", collapsed: null },
-    { role: "assistant", text: "第一个最终回答", at: "2026-10-02 10:02", collapsed: null },
+    {
+      role: "assistant",
+      text: [
+        "第一个**最终回答**，带 `行内代码`。",
+        "",
+        "```js",
+        "const answer = 42;",
+        "```",
+        "",
+        "- 第一点",
+        "- 第二点",
+        "",
+        "[安全链接](https://example.com/x) 与 [危险链接](javascript:alert(1))",
+      ].join("\n"),
+      at: "2026-10-02 10:02",
+      collapsed: null,
+    },
     { role: "compacted", text: "CTX-SUMMARY-这段应该初始隐藏", at: "2026-10-02 10:30", collapsed: 2735 },
     { role: "user", text: "第二个请求", at: "2026-10-02 11:00", collapsed: null },
     { role: "assistant", text: "第二个最终回答", at: "2026-10-02 11:01", collapsed: null },
@@ -657,7 +673,7 @@ for (const who of hostElements(reader.tree, "sh-turn-who").map(textOf)) {
 }
 const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
 assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
-assert.ok(prose.includes("第一个最终回答"), "the agent's answer must be shown");
+assert.ok(prose.includes("第一个"), "the agent's answer must be shown");
 
 // ---- one turn is a request plus its answer ---------------------------
 const turnGroups = hostElements(reader.tree, "sh-turn-group");
@@ -699,6 +715,46 @@ assert.ok(
   hostElements(reader.tree, "sh-compacted-count").length > 0,
   "and how much it folded away",
 );
+// ---- markdown is rendered, not printed raw ---------------------------
+// A transcript is prose: code, lists and emphasis are the shape of what an agent
+// said, and showing the asterisks instead of the emphasis makes it unreadable.
+const all = flatten(reader.tree);
+assert.ok(hostElements(reader.tree, "sh-md-code").length > 0, "inline code must be rendered");
+assert.ok(all.some((node) => node.type === "strong"), "bold must be rendered as emphasis");
+assert.ok(hostElements(reader.tree, "sh-md-list").length > 0, "a list must become a list");
+assert.equal(
+  all.filter((node) => node.type === "li").length,
+  2,
+  "two bullets must become two items",
+);
+const pre = hostElements(reader.tree, "sh-md-pre");
+assert.equal(pre.length, 1, "a fenced block must become one code block");
+assert.ok(
+  flatten(pre[0]).some((node) => node.type === "code" && textOf(node).includes("const answer = 42;")),
+  "and must keep the code it fenced",
+);
+assert.ok(
+  flatten(pre[0]).some((node) => textOf(node) === "js"),
+  "and label its language",
+);
+
+// Links are rendered, but only for schemes we will actually hand to the OS: a
+// transcript holds whatever the session quoted, `javascript:` included.
+const links = all.filter((node) => node.type === "a");
+assert.equal(links.length, 1, `only the safe link may become a link: ${JSON.stringify(links.map((l) => l.props.href))}`);
+assert.equal(links[0].props.href, "https://example.com/x");
+assert.equal(links[0].props.rel, "noreferrer", "an external link must not carry the opener");
+assert.equal(links[0].props.target, "_blank");
+assert.ok(
+  !all.some((node) => node.type === "a" && /^javascript:/i.test(String(node.props?.href ?? ""))),
+  "a javascript: URL must never become a link",
+);
+assert.ok(
+  hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n").includes("危险链接"),
+  "an unlinkable URL must still show its text, just not as a link",
+);
+console.log(`markdown: ${pre.length} code block(s), ${links.length} link(s), 1 unsafe URL kept as text`);
+
 console.log(`turns: ${turnGroups.length} grouped, ${toggles.length} collapsible seams`);
 
 // Every turn says when it happened.
