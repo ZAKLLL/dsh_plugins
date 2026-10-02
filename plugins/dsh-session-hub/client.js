@@ -1215,7 +1215,7 @@ window.__ModuleLoader__.load({
                 { type: "button", className: "sh-btn", disabled: loading, onClick: () => load(true) },
                 loading ? t("refreshing") : t("refresh"),
               ),
-              h("button", { type: "button", className: "sh-btn sh-close", onClick: close, "aria-label": t("close") }, "✕"),
+              h("button", { type: "button", className: "sh-btn sh-close", onClick: close, title: t("close"), "aria-label": t("close") }, "✕"),
             ),
           h(
               "div",
