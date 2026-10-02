@@ -1293,6 +1293,21 @@ async function openOriginal(value) {
     return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
   }
 
+  // Ask the session's own desktop app first, when its dialect has one. A URL
+  // nothing handles is the expected case on a machine without that app, so the
+  // failure here is silent and the terminal resume below is the fallback. This
+  // deliberately never runs an installer: opening a session must not start a
+  // download.
+  const desktop = adapterOf(card.agent)?.desktopOpen?.(card) ?? null;
+  if (desktop !== null) {
+    try {
+      await execFileAsync("open", [desktop.url], { timeout: 10000, maxBuffer: 1024 * 1024 });
+      return { kind: "desktop", sessionId: card.sessionId, command: `open ${desktop.url}`, terminal: desktop.label };
+    } catch {
+      /* Nothing handles the scheme: carry on to the terminal. */
+    }
+  }
+
   const cli = resolveCmuxCli();
 
   // A session cmux is already running gets *focused*, not resumed. Launching a

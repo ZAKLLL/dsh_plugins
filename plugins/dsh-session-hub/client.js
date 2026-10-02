@@ -1139,7 +1139,9 @@ window.__ModuleLoader__.load({
         }
         try {
           const result = await hub("open", { key: card.key });
-          if (result.kind === "focus") {
+          if (result.kind === "desktop") {
+            say(t("openedEditor", { editor: result.terminal ?? "the app" }));
+          } else if (result.kind === "focus") {
             say(t("focused", { terminal: result.terminal ?? "cmux" }));
           } else if (result.kind === "cmux" || result.kind === "terminal") {
             say(t("opened", { terminal: result.terminal ?? "terminal" }));

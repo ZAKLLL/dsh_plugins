@@ -99,6 +99,24 @@ for (const card of list.body.sessions) {
 
 // A nested session must point at a session that really is in the corpus, and a
 // subagent must never be left dangling — the tree would silently lose it.
+// A dialect may name a desktop deep link. It is only ever *tried*, so its shape
+// must at least be a URL — and a session without an id must offer none.
+for (const source of (await import("../sources/index.js").catch(() => ({ default: null })), [])) void source;
+const adapters = {};
+for (const id of ["dsh", "claude", "codex", "gemini", "pi", "opencode"]) {
+  adapters[id] = (await import(`../sources/${id}.js`)).default;
+}
+for (const card of list.body.sessions) {
+  const target = adapters[card.agent]?.desktopOpen?.(card) ?? null;
+  if (target === null) continue;
+  assert.match(target.url, /^[a-z][a-z0-9+.-]*:\/\//, `a desktop target must be a URL: ${target.url}`);
+  assert.ok(
+    target.url.includes(card.sessionId),
+    `a desktop link must carry the session it is for: ${target.url}`,
+  );
+  assert.equal(typeof target.label, "string", "and name the app it opens");
+}
+
 const cardKeys = new Set(list.body.sessions.map((session) => session.key));
 const bySessionId = new Map(list.body.sessions.map((session) => [session.sessionId, session]));
 for (const card of list.body.sessions) {

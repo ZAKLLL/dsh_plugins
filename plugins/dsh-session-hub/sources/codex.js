@@ -221,6 +221,20 @@ async function removeCodexIndexEntry(sessionId) {
 
 export default defineAdapter({
   id: "codex",
+  /**
+   * The Codex desktop app registers `codex://` and builds thread links from a
+   * `codex://threads/` prefix.
+   *
+   * Only `codex://threads/new` is provably constructed by this CLI — the id form
+   * is inferred, not confirmed, because the app is not installed on this machine
+   * and its Info.plist could not be read. That is why the Host merely tries it:
+   * when nothing handles the URL the session still opens in a terminal, and when
+   * the app is there and the form is right it lands on the thread.
+   */
+  desktopOpen: (card) =>
+    typeof card.sessionId === "string" && card.sessionId !== ""
+      ? { url: `codex://threads/${card.sessionId}`, label: "Codex" }
+      : null,
   sessionFile: (card) => ({ path: card.file, kind: "file", label: handoffName(card) }),
   label: LABEL,
   executables: ["codex"],
