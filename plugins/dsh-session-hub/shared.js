@@ -10,6 +10,7 @@
 
 import zlib from "node:zlib";
 import { basename, join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 
 /** A session whose store holds no human text at all. */
@@ -248,3 +249,32 @@ export function trackTool(reading, id, name, present) {
 }
 
 /** Fold one store event into a reading. Each dialect reports different things. */
+
+/**
+ * What to call a session when it is handed to another agent.
+ *
+ * It has to survive being a file name on every platform, and still read as the
+ * session rather than as a store path.
+ */
+export function handoffName(card) {
+  const flat = String(card.title ?? "")
+    .replace(/[/\\:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+  return `${card.agentLabel} · ${flat === "" ? "session" : flat}.md`;
+}
+
+/**
+ * Write a portable copy of a session into `dir` and describe it.
+ *
+ * This is what an adapter uses when its store is not a single attachable file —
+ * a directory of zstd frames, or a row in a shared database. The caller gets
+ * the same shape either way, so nothing above has to know which case it hit.
+ */
+export async function dumpText(dir, name, text) {
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, name);
+  await writeFile(path, text, "utf8");
+  return { path, name, origin: "dump", bytes: Buffer.byteLength(text, "utf8") };
+}

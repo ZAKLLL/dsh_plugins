@@ -13,6 +13,7 @@ import { defineAdapter } from "./adapter.js";
 import {
   UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
+  handoffName,
 } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
@@ -151,6 +152,7 @@ function geminiMessageList(events, truncated) {
 
 export default defineAdapter({
   id: "gemini",
+  sessionFile: (card) => ({ path: card.file, kind: "file", label: handoffName(card) }),
   label: LABEL,
   executables: ["gemini"],
   spawnCommand: "gemini",

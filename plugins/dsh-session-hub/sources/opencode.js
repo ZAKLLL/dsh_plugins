@@ -10,7 +10,7 @@
 
 import { dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
-import { UNTITLED, home, looksInjected, num, oneLine, projectOf } from "../shared.js";
+import { UNTITLED, dumpText, handoffName, home, looksInjected, num, oneLine, projectOf } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
 const LABEL = "opencode";
@@ -208,8 +208,21 @@ async function removeOpencode(sessionId) {
   }
 }
 
+/**
+ * Hand this session over as a readable file.
+ *
+ * opencode has no per-session file at all — the session is a row in a shared
+ * database — so the row is read and dumped.
+ */
+async function handoffOpencode(card, { dir }) {
+  const value = await readOpencode(card.sessionId, { withBody: true });
+  return dumpText(dir, handoffName(card), value === null ? "" : value.body);
+}
+
 export default defineAdapter({
   id: "opencode",
+  handoff: handoffOpencode,
+  sessionFile: (card) => ({ path: opencodeDbPath(), kind: "record", label: handoffName(card) }),
   label: LABEL,
   executables: ["opencode"],
   spawnCommand: "opencode",

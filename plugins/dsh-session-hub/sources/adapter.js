@@ -88,7 +88,20 @@
  */
 
 /**
- * How to delete one card.
+ * An attachable file standing in for one session.
+ *
+ * `origin` says whether this *is* the store artifact or a copy an adapter made,
+ * because "drag the session file" has no single answer across dialects.
+ *
+ * @typedef {object} Handoff
+ * @property {string} path Absolute path of a readable file.
+ * @property {string} name Suggested attachment name.
+ * @property {"native"|"dump"} origin
+ * @property {number} bytes
+ */
+
+/**
+ * The store artifact a session lives in.
  *
  * The Host owns the guards (unknown key, running session, store-root fence); an
  * adapter only says what to remove and what extra bookkeeping that implies.
@@ -143,6 +156,13 @@
  *   reads the process table, which is the only thing that sees an agent started
  *   straight from a terminal.
  * @property {(sessionId: string) => string|null} resumeCommand
+ * @property {(card: SessionCard) => SessionArtifact} sessionFile The store
+ *   artifact this session lives in — exact, and what the delete fence and the
+ *   transcript header cite.
+ * @property {(card: SessionCard, options: {dir: string}) => Promise<Handoff>} [handoff]
+ *   Hand this session over as an attachable file. Omit it when the store is
+ *   already one readable file, and the Host returns that file directly; provide
+ *   it to dump a portable copy instead (DSH's frames, opencode's database row).
  *
  * // --- inventory: one directory of session files ----------------------
  * @property {() => string} root Directory to walk. Always present, even for a
@@ -201,6 +221,7 @@ export function defineAdapter(spec) {
   if (!Array.isArray(spec?.executables)) problems.push("executables[]");
   if (typeof spec?.root !== "function") problems.push("root()");
   if (typeof spec?.resumeCommand !== "function") problems.push("resumeCommand()");
+  if (typeof spec?.sessionFile !== "function") problems.push("sessionFile()");
 
   const fileBacked = typeof spec?.build === "function";
   const selfServed = typeof spec?.list === "function";

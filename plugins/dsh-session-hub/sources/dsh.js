@@ -12,6 +12,8 @@ import { defineAdapter } from "./adapter.js";
 import {
   UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
+  dumpText,
+  handoffName,
 } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
@@ -98,8 +100,21 @@ async function buildDsh(file, stats) {
 
 /** Claude's first human message can carry a platform wrapper; keep the question. */
 
+/**
+ * Hand this session over as a readable file.
+ *
+ * A DSH session is a directory of concatenated zstd frames, so there is no file
+ * to attach: the store is decoded and its transcript dumped instead.
+ */
+async function handoffDsh(card, { dir }) {
+  const value = await buildDsh(card.file, await stat(card.file));
+  return dumpText(dir, handoffName(card), value.body);
+}
+
 export default defineAdapter({
   id: "dsh",
+  handoff: handoffDsh,
+  sessionFile: (card) => ({ path: dirname(card.file), kind: "directory", label: handoffName(card) }),
   label: LABEL,
   executables: [],
   spawnCommand: null,
