@@ -241,6 +241,22 @@ Codex 的索引是**先写临时文件再 rename** 重写的，写到一半被�
 | Claude Code | 有 `tool_use` 没有配对的 `tool_result` | **推断**：可能在跑，也可能在等确认，所以只写「工具进行中」 |
 | Codex | 有 `function_call` 没有配对的 `function_call_output` | 同上 |
 
+### 只显示回答，不显示思考
+
+预览的 OUT（以及转录、标题回落）走同一个取文本的规则：**只取可见正文，跳过模型的内部推理块**。
+
+这件事对 DSH 尤其重要——它的 `reasoning` 块**也带 `text` 字段**：
+
+```json
+{"type": "reasoning", "text": "The user wants a plugin to manage..."}
+```
+
+所以「凡是带 text 的块就当正文」会把模型的自言自语当成它的回答。实测本机 DSH 日志里 **reasoning 905 块 vs text 386 块**——推理比回答多两倍多，于是每一处预览、每一份转录、每一次标题回落显示的都是思考过程。
+
+现在按块类型显式排除（`reasoning` / `thinking` / `redacted_thinking` / `analysis` / `thought`），**没有 `type` 的块仍然算正文**，所以更简单的形状不受影响。Claude 和 pi 把这类块叫 `thinking`、正文放在 `thinking` 字段里，本来就被跳过了；现在把规则写明白，而不是靠巧合。
+
+实测效果：DSH 转录从 **1,351,906 → 275,216 字符（降 80%）**；Claude 一字未变（403,145）。
+
 ### 两个输入 / 输出源，后者优先
 
 | 来源 | 怎么来 | 需要 agent 配合吗 |

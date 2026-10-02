@@ -89,13 +89,34 @@ function oneLine(text, max = 140) {
 }
 
 /** The concatenated `text` of a content payload, tolerating a plain string. */
+/**
+ * Block types that carry a model's private reasoning rather than its answer.
+ *
+ * This matters most for DSH, whose `reasoning` blocks also use a `text` field —
+ * so a naive "any block with text" reader returns the model thinking out loud
+ * instead of what it actually said. Measured on one machine's DSH logs:
+ * 905 reasoning blocks against 386 text blocks, so reasoning was the bulk of
+ * every preview, every transcript, and every title fallback.
+ *
+ * Claude and pi spell theirs `thinking`, with the body in a `thinking` field
+ * that this reader already skipped by accident; naming them here makes the
+ * intent explicit rather than incidental.
+ */
+const REASONING_BLOCK_TYPES = new Set(["reasoning", "thinking", "redacted_thinking", "analysis", "thought"]);
+
+/**
+ * The visible text of a content-block list.
+ *
+ * A block counts when it carries a `text` string and is not a reasoning block;
+ * a block with no `type` at all still counts, so simpler shapes keep working.
+ */
 function textOf(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts = [];
   for (const block of content) {
     if (typeof block === "string") parts.push(block);
-    else if (block && typeof block.text === "string") parts.push(block.text);
+    else if (block && typeof block.text === "string" && !REASONING_BLOCK_TYPES.has(block.type)) parts.push(block.text);
   }
   return parts.join("\n").trim();
 }

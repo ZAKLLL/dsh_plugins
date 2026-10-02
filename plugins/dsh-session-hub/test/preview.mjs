@@ -37,6 +37,9 @@ const IDLE_ID = `session-${STAMP}-idle`;
 const PENDING_ID = `session-${STAMP}-pending`;
 const RESOLVED_ID = `session-${STAMP}-resolved`;
 const APPROVAL_TOOL = "plugin_manager";
+// DSH reasoning blocks carry a `text` field too, so a naive reader returns the
+// model thinking out loud instead of its answer.
+const REASONING_TEXT = "SELFTEST-REASONING-do-not-show";
 
 const RUNNING_INPUT = "把最后那段日志贴给我看看";
 const RUNNING_OUTPUT = "日志在这里，最后一行是超时，我准备把超时从 30s 提到 120s。";
@@ -92,7 +95,20 @@ let spoolExisted = true;
 function fixture(id, cwd, input, output, extra = []) {
   const header = { type: "session", version: 4, id, createdAt: Date.now(), cwd, isSeeded: false, delegationDepth: 0, agentPreset: "standard" };
   const user = { type: "user/message", seq: 2, time: Date.now(), data: { role: "user", content: [{ type: "text", text: input }] } };
-  const assistant = { type: "assistant/message", seq: 3, time: Date.now(), data: { message: { role: "assistant", content: [{ type: "text", text: output }] } } };
+  const assistant = {
+    type: "assistant/message",
+    seq: 3,
+    time: Date.now(),
+    data: {
+      message: {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: REASONING_TEXT },
+          { type: "text", text: output },
+        ],
+      },
+    },
+  };
   const lines = [header, user, assistant, ...extra].map((event) => JSON.stringify(event));
   return zlib.zstdCompressSync(Buffer.from(lines.join("\n") + "\n", "utf8"));
 }
@@ -193,6 +209,12 @@ try {
   assert.equal(preview.source, "store", "with no hook registered the preview is derived");
   assert.equal(preview.input, RUNNING_INPUT, "the input must come from the store tail");
   assert.equal(preview.output, RUNNING_OUTPUT, "the latest output must come from the store tail");
+  assert.equal(
+    preview.output.includes(REASONING_TEXT),
+    false,
+    "a preview must show what the model said, not its reasoning block",
+  );
+  console.log("preview: reasoning blocks are not mistaken for the answer");
   assert.ok(preview.at !== null, "the preview must carry a timestamp");
   console.log("preview: derived input and output from a running session's store");
 
