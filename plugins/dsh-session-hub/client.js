@@ -593,14 +593,21 @@ window.__ModuleLoader__.load({
         h("path", { d: "M2.9 13.3h10.2" }));
     }
 
+    /**
+     * A terminal window.
+     *
+     * This used to draw an arrow leaving an open box — which IS the share icon,
+     * and read as one. The verb is "hand this session to the agent that owns
+     * it", so the glyph is the thing that runs it: a window with a prompt in it.
+     */
     function OpenIcon() {
       return h("svg", {
         viewBox: "0 0 16 16", width: 14, height: 14, fill: "none", stroke: "currentColor",
-        strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
+        strokeWidth: 1.4, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
       },
-        h("path", { d: "M6.3 3.5H3.9c-.66 0-1.2.54-1.2 1.2v7.4c0 .66.54 1.2 1.2 1.2h7.4c.66 0 1.2-.54 1.2-1.2V9.7" }),
-        h("path", { d: "M9.7 2.8h3.5v3.5" }),
-        h("path", { d: "M13.2 2.8 7.7 8.3" }));
+        h("rect", { x: 1.9, y: 3.1, width: 12.2, height: 9.8, rx: 1.6 }),
+        h("path", { d: "M4.9 6.6l1.7 1.7-1.7 1.7" }),
+        h("path", { d: "M8.6 10h2.7" }));
     }
 
     function RefreshIcon() {
