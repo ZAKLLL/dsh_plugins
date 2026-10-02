@@ -231,7 +231,9 @@ const window = {
     },
   },
 };
-vm.runInNewContext(source, { window, console, fetch: stubFetch, setTimeout, clearTimeout, setInterval, clearInterval });
+// `File` has to be handed in too: the drag payload builds one, and without it
+// the sandbox throws where a browser would not.
+vm.runInNewContext(source, { window, console, fetch: stubFetch, setTimeout, clearTimeout, setInterval, clearInterval, File });
 
 assert.deepEqual(loadedIds, ["dsh-session-hub"], "the bundle must register itself under its package name");
 assert.equal(typeof factory, "function");
@@ -413,6 +415,50 @@ for (const node of groupTimes) {
     "the project time must explain itself on hover",
   );
 }
+
+// ---- what a drag actually carries ----------------------------------
+// The composer inserts `text/plain` literally, and the attachment layer takes
+// any `Files` item — so a payload that only names the store reads as a stray
+// file name. This drives the real handler and inspects what it sets.
+const dragRow = rows[0];
+assert.ok(dragRow, "a row is needed to test the drag payload");
+
+// Hover first: `dragstart` cannot await, so the transcript has to be cached
+// before the drag begins. That ordering is the whole point of the prefetch.
+const transferFor = (captured) => ({
+  effectAllowed: null,
+  items: { add: (file) => captured.files.push(file) },
+  setData: (type, value) => {
+    if (type === "text/plain") captured.plain = value;
+  },
+});
+
+dragRow.props.onPointerEnter();
+const captured = { plain: null, files: [] };
+for (let attempt = 0; attempt < 40; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  captured.plain = null;
+  captured.files.length = 0;
+  dragRow.props.onDragStart({ dataTransfer: transferFor(captured) });
+  if (captured.files.length > 0) break;
+}
+
+assert.equal(typeof captured.plain, "string", "a drag must set a text payload");
+assert.ok(
+  !/^\(history still loading|.*\.jsonl/m.test(captured.plain) || captured.plain.startsWith("# Session:"),
+  `the text payload must be the history, not a path: ${captured.plain.slice(0, 120)}`,
+);
+assert.ok(
+  captured.plain.startsWith("# Session:"),
+  `the prefetched history must be what the drag carries: ${captured.plain.slice(0, 120)}`,
+);
+assert.equal(captured.files.length, 1, "and it must also offer the history as a file");
+assert.ok(
+  captured.files[0].name.endsWith(".md") && !/^claude-|^codex-|^dsh-/.test(captured.files[0].name),
+  `the attachment must be named after the session, not the store: ${captured.files[0].name}`,
+);
+assert.ok(captured.files[0].size > 0, "the attachment must not be empty");
+console.log(`drag: ${captured.files[0].name} (${captured.files[0].size} bytes), text payload is the history`);
 
 // Only the topmost group opens by default; the rest start collapsed, or a
 // corpus of hundreds of sessions across dozens of projects is just noise.

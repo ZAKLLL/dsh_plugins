@@ -666,7 +666,13 @@ window.__ModuleLoader__.load({
      * text fallback for anything that refuses file items.
      */
     function useSessionDrag({ card, transcriptCache, onDragState }) {
-      /** Fetch (and cache) the transcript so `dragstart` can attach it synchronously. */
+      /**
+       * Fetch (and cache) the transcript so `dragstart` can carry it.
+       *
+       * `dragstart` cannot await, so the fetch has to have finished before the
+       * drag begins. Hover is the earliest signal; a press is the last one that
+       * still leaves any time, and a focus is what a keyboard drag gets.
+       */
       const prefetch = React.useCallback(() => {
         if (transcriptCache.has(card.key)) return;
         transcriptCache.set(card.key, null);
@@ -681,14 +687,25 @@ window.__ModuleLoader__.load({
           // underneath. Applied imperatively: re-rendering the drag source
           // mid-drag cancels the drag in some browsers.
           onDragState(true);
+
           const text = transcriptCache.get(card.key);
-          const name = `${card.agent}-${slugify(card.title)}.md`;
+          const ready = typeof text === "string" && text !== "";
+          // Name the file after the session, not after the store path: this name
+          // is what the drop shows as a chip, and `claude-<slug>.md` reads as a
+          // stray file rather than as the conversation that was dragged.
+          const name = `${card.agentLabel} · ${slugify(card.title, 60)}.md`;
+
           try {
             event.dataTransfer.effectAllowed = "copy";
-            event.dataTransfer.setData("text/plain", `${card.agentLabel} · ${card.title}\n${card.file}`);
-            if (typeof text === "string" && text !== "") {
-              event.dataTransfer.items.add(new File([text], name, { type: "text/markdown" }));
-            }
+            // `text/plain` is the only representation this composer inserts
+            // literally, and it is what every text-only drop target reads — so it
+            // carries the transcript itself, not a path to it. The Host resolves
+            // the attachment route separately; either way the content arrives.
+            event.dataTransfer.setData(
+              "text/plain",
+              ready ? text : `${card.agentLabel} · ${card.title}\n${card.file}\n\n(history still loading — hover the row a moment and drag again)`,
+            );
+            if (ready) event.dataTransfer.items.add(new File([text], name, { type: "text/markdown" }));
           } catch {
             /* A browser that refuses File items still carries the text payload. */
           }
@@ -728,6 +745,8 @@ window.__ModuleLoader__.load({
           onDragStart,
           onDragEnd,
           onPointerEnter: prefetch,
+            onPointerDown: prefetch,
+            onFocus: prefetch,
           // Subagents indent under the session that started them.
           style: depth > 0 ? { paddingLeft: `${4 + depth * 14}px` } : undefined,
           title: [`${card.agentLabel}`, card.cwd, card.partial ? t("partial") : null].filter(Boolean).join(" · "),
@@ -1840,6 +1859,8 @@ window.__ModuleLoader__.load({
             onDragStart,
             onDragEnd,
             onPointerEnter: prefetch,
+            onPointerDown: prefetch,
+            onFocus: prefetch,
             onClick: onSelect,
             onKeyDown: (event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
@@ -1930,6 +1951,8 @@ window.__ModuleLoader__.load({
             onDragStart,
             onDragEnd,
             onPointerEnter: prefetch,
+            onPointerDown: prefetch,
+            onFocus: prefetch,
           },
           h(
             "div",
