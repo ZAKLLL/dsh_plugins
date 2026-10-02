@@ -106,6 +106,8 @@ window.__ModuleLoader__.load({
       liveHookSource: "reported through a hook",
       liveStoreSource: "read from its own session store",
       liveIdle: "No agent is running right now",
+      reference: "Reference this session in the draft",
+      referenceNone: "This session has no store that can be referenced",
       liveHint: "Select a tile for detail",
       detailDir: "Directory",
       detailUptime: "Up for",
@@ -205,6 +207,8 @@ window.__ModuleLoader__.load({
       liveHookSource: "由 hook 上报",
       liveStoreSource: "从它自己的会话记录读取",
       liveIdle: "目前没有 agent 在运行",
+      reference: "把这条会话引用进草稿",
+      referenceNone: "这条会话没有可作为引用目标的存储",
       liveHint: "点方块看详情",
       detailDir: "目录",
       detailUptime: "运行时长",
@@ -366,6 +370,9 @@ window.__ModuleLoader__.load({
 .sh-tile-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
 .sh-tile-badge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;line-height:13px;padding:0 4px}
 .sh-tile-badge-wait{color:var(--dsw-alias-state-error-primary)}
+/* The at-sign for the reference action: text, not an icon, so it cannot be
+   mistaken for another verb. */
+.sh-at{font-size:13px;font-weight:600;line-height:1}
 `;
 
     function installStyles() {
@@ -814,6 +821,17 @@ window.__ModuleLoader__.load({
           { className: "sh-row-actions" },
           h(
             "button",
+            {
+              type: "button",
+              className: "sh-icon-btn",
+              disabled: busy,
+              title: t("reference"),
+              "aria-label": t("reference"),
+              onClick: run(() => onReference(card)),
+            },
+            h("span", { className: "sh-at", "aria-hidden": true }, "@"),
+          ),
+          h(
             { type: "button", className: "sh-icon-btn", disabled: busy, title: t("continue"), "aria-label": t("continue"), onClick: run(() => onContinue(card)) },
             h(ContinueIcon),
           ),
@@ -849,6 +867,24 @@ window.__ModuleLoader__.load({
        * Shared by the session list and the live view so both offer the same
        * verb; the caller supplies the composer it should write into.
        */
+      /**
+       * Put `text` into the draft of the session on screen.
+       *
+       * Insertion at the caret is preferred and a whole-draft replacement is the
+       * fallback, because losing the text entirely is the one unacceptable
+       * outcome. Shared by every verb that writes into the composer.
+       */
+      function insertIntoDraft(actions, text) {
+        let inserted = false;
+        try {
+          const span = actions.captureInsertion();
+          inserted = actions.insertText(text, span) === true;
+        } catch {
+          inserted = false;
+        }
+        if (!inserted) actions.setDraft(text);
+      }
+
       async function continueSession(card, composerFace, close) {
         const actions = composerFace?.inputActions ?? null;
         const liveSessionId = composerFace?.sessionId ?? null;
@@ -858,15 +894,34 @@ window.__ModuleLoader__.load({
         }
         try {
           const result = await hub("continue", { key: card.key, currentSessionId: liveSessionId });
-          const text = result.prompt ?? "";
-          let inserted = false;
-          try {
-            const span = actions.captureInsertion();
-            inserted = actions.insertText(text, span) === true;
-          } catch {
-            inserted = false;
+          insertIntoDraft(actions, result.prompt ?? "");
+          say(t("inserted"));
+          close();
+        } catch (caught) {
+          say(t("failed", { message: String(caught?.message ?? caught) }), true);
+        }
+      }
+
+      /**
+       * Write a reference to this session into the draft.
+       *
+       * Which reference — a native DSH mention, or an `@` to the session's own
+       * store artifact — is the Host's answer, because it depends on the agent.
+       */
+      async function referenceSession(card, composerFace, close) {
+        const actions = composerFace?.inputActions ?? null;
+        const liveSessionId = composerFace?.sessionId ?? null;
+        if (actions === null || actions === undefined) {
+          say(t("noComposer"), true);
+          return;
+        }
+        try {
+          const result = await hub("reference", { key: card.key, currentSessionId: liveSessionId });
+          if (typeof result.text !== "string" || result.text === "") {
+            say(t("referenceNone"), true);
+            return;
           }
-          if (!inserted) actions.setDraft(text);
+          insertIntoDraft(actions, result.text);
           say(t("inserted"));
           close();
         } catch (caught) {
@@ -1012,6 +1067,7 @@ window.__ModuleLoader__.load({
         );
 
         const onOpen = React.useCallback((card) => openSession(card, close), [close]);
+        const onReference = React.useCallback((card) => referenceSession(card, composerFace, close), [composerFace, close]);
 
         const counts = React.useMemo(() => {
           const map = new Map();
@@ -1323,6 +1379,7 @@ window.__ModuleLoader__.load({
                           React.Fragment,
                           { key: card.key },
                           h(SessionRow, {
+                          onReference,
                             card,
                             t,
                             onContinue,

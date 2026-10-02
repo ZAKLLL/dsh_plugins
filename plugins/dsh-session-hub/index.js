@@ -766,6 +766,19 @@ async function materialize(value, destDir, currentSessionId) {
  * Deleting a session
  * ------------------------------------------------------------------ */
 
+/**
+ * Turn a path into DSH's own `@` file reference.
+ *
+ * Mirrors `formatFileMention` from the reference plugin exactly: a path the
+ * grammar cannot represent (a quote, a control character) has no mention, and a
+ * path with whitespace has to be quoted.
+ */
+function fileMention(path) {
+  const text = String(path ?? "");
+  if (text === "" || /[\u0000-\u001f\u007f-\u009f"]/u.test(text)) return null;
+  return /\s/u.test(text) ? `@"${text}"` : `@${text}`;
+}
+
 /** The store root one agent owns; nothing outside it is ever touched. */
 function rootOf(agent) {
   return SOURCES.find((source) => source.id === agent)?.root() ?? null;
@@ -1263,7 +1276,7 @@ function hubState() {
  * @param ctx - The Host plugin context of the generation that is live.
  */
 /** Every operation this Host answers; also reported when an unknown one arrives. */
-const OPS = ["list", "status", "preview", "pin", "transcript", "continue", "open", "spawn", "delete", "delete-many"];
+const OPS = ["list", "status", "preview", "pin", "transcript", "continue", "reference", "open", "spawn", "delete", "delete-many"];
 
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
@@ -1459,6 +1472,58 @@ async function dispatch(payload, ctx) {
       sessions: previews.filter(Boolean),
       hookPath: hooksPath(),
     };
+  }
+
+  /**
+   * The text that references one session inside a prompt draft.
+   *
+   * A DSH session has a native mention, so it gets that — the very chip the `@`
+   * picker would insert. Every other agent has no such notion, so the reference
+   * points at the session's own store artifact through the same `@` file
+   * grammar. An artifact that is not a file is dumped first when the adapter
+   * knows how, and reported as un-referenceable when it does not.
+   */
+  if (op === "reference") {
+    const key = typeof payload?.key === "string" ? payload.key : "";
+    const card = lastCards.find((entry) => entry.key === key);
+    if (card === undefined) return { ok: false, error: "unknown session key" };
+
+    const source = adapterOf(card.agent);
+    if (source === null) return { ok: false, error: `unknown agent: ${card.agent}` };
+    const artifact = source.sessionFile(card);
+
+    if (card.agent === "dsh") {
+      const currentId = typeof payload?.currentSessionId === "string" ? payload.currentSessionId : "";
+      const owner = currentId === "" ? undefined : ctx?.get?.("agents")?.get?.(currentId);
+      const resolver = ctx?.get?.("sessionReferenceResolver");
+      if (owner !== undefined && resolver !== undefined) {
+        try {
+          const found = await resolver.remoteExportCandidates(owner, card.sessionId ?? card.title ?? "", undefined);
+          const list = Array.isArray(found) ? found : [];
+          const hit = list.find((entry) => entry?.sessionId === card.sessionId) ?? list[0] ?? null;
+          if (typeof hit?.mention === "string" && hit.mention !== "") {
+            return { ok: true, kind: "mention", text: hit.mention, label: hit.label ?? card.title, path: null };
+          }
+        } catch {
+          /* No live resolver, or no retained session: fall through to the store. */
+        }
+      }
+    }
+
+    let path = artifact.path;
+    if (artifact.kind !== "file") {
+      if (typeof source.handoff !== "function") {
+        return { ok: true, kind: "none", text: null, label: artifact.label, path, reason: "no readable artifact" };
+      }
+      const dumped = await source.handoff(card, { dir: join(tmpdir(), "dsh-session-hub-reference") });
+      path = dumped.path;
+    }
+
+    const text = fileMention(path);
+    if (text === null) {
+      return { ok: true, kind: "none", text: null, label: artifact.label, path, reason: "path is not representable as a reference" };
+    }
+    return { ok: true, kind: "file", text, label: basename(path), path };
   }
 
   /**

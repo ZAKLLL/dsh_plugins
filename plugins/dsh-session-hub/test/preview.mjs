@@ -37,6 +37,8 @@ const IDLE_ID = `session-${STAMP}-idle`;
 const PENDING_ID = `session-${STAMP}-pending`;
 const RESOLVED_ID = `session-${STAMP}-resolved`;
 const APPROVAL_TOOL = "plugin_manager";
+// What the DSH reference resolver would hand back for the fixture.
+const MENTION = "@session-selftest";
 // DSH reasoning blocks carry a `text` field too, so a naive reader returns the
 // model thinking out loud instead of its answer.
 const REASONING_TEXT = "SELFTEST-REASONING-do-not-show";
@@ -57,7 +59,16 @@ mod.apply({
       if (typeof dispose === "function") dispose();
     };
   },
-  get: (name) => (name === "agents" ? registry : undefined),
+  get: (name) => {
+    if (name === "agents") return registry;
+    // The reference resolver is what turns a DSH session into a native mention.
+    if (name === "sessionReferenceResolver") {
+      return {
+        remoteExportCandidates: async () => [{ sessionId: RUNNING_ID, mention: MENTION, label: "selftest session" }],
+      };
+    }
+    return undefined;
+  },
 });
 
 async function call(payload) {
@@ -231,6 +242,16 @@ try {
   assert.equal(resolvedPreview.pending, null, "a decided approval must not read as waiting");
   console.log("preview: an unanswered approval reads as waiting, a decided one does not");
 
+  // ---- referencing a session -----------------------------------------
+  // Every agent offers this, but what the reference *is* depends on the agent:
+  // a DSH session has a native mention, the rest point at their own store.
+  const dshRef = await call({ op: "reference", key: card.key, currentSessionId: RUNNING_ID });
+  assert.equal(dshRef.ok, true, `reference failed: ${dshRef.error}`);
+  assert.equal(dshRef.kind, "mention", "a DSH session must use the native mention");
+  assert.equal(dshRef.text, MENTION, "and the mention must be the resolver's own text");
+
+  console.log(`reference: dsh → ${dshRef.text}`);
+
   // ---- a hook report overrides the derivation ------------------------
   // Flags rather than stdin: async `execFile` has no `input` option (that is
   // `execFileSync`), so piping here would silently send nothing.
@@ -303,6 +324,15 @@ try {
   );
   assert.ok(piPreview.pid > 0, "and the process it belongs to");
   console.log(`preview: pi tokens ${tokens.total} summed, up for ${Math.round(piPreview.elapsedMs / 1000)}s`);
+
+  // An agent with no notion of mentions references its own store artifact
+  // instead, which is what makes the action available for every agent.
+  const piRef = await call({ op: "reference", key: piCard.key });
+  assert.equal(piRef.ok, true, `reference failed: ${piRef.error}`);
+  assert.equal(piRef.kind, "file", "an agent without mentions must reference its store");
+  assert.equal(piRef.text, `@${PI_FILE}`, "and cite the session's own artifact path");
+  assert.equal(piRef.path, PI_FILE);
+  console.log(`reference: pi → ${piRef.text}`);
 
   console.log("\npreview test: all assertions passed");
 } finally {
