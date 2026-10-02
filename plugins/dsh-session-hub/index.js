@@ -1275,11 +1275,13 @@ async function launchInTerminal(cwd, command, title) {
       // used to mean every open silently landed in Terminal.app instead. Start
       // it and try once more before falling back.
       try {
-        await execFileAsync("open", ["-a", "cmux"], { timeout: 10000, maxBuffer: 1024 * 1024 });
-        // It needs a moment to come up and open its socket.
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-        await openWorkspace();
-        return { kind: "cmux", command, terminal: "cmux" };
+        // By bundle id, not by name: `open -a cmux` resolves an app *file*, which
+        // is a different and weaker lookup than the identity the system has.
+        await execFileAsync("open", ["-b", "com.cmuxterm.app"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+        if (await waitForCmuxSocket()) {
+          await openWorkspace();
+          return { kind: "cmux", command, terminal: "cmux" };
+        }
       } catch {
         /* Genuinely unavailable — the terminal below is the fallback. */
       }
@@ -1302,6 +1304,32 @@ async function launchInTerminal(cwd, command, title) {
 }
 
 /** The command that starts a fresh interactive session for each agent. */
+/** Where cmux listens, in the order its own CLI reports them. */
+const CMUX_SOCKETS = [".local/state/cmux/cmux.sock", "/tmp/cmux.sock"];
+
+/**
+ * Wait until cmux is listening, or give up.
+ *
+ * Waiting on the socket rather than on a fixed delay: how long an app takes to
+ * come up is not something to guess at, and the socket is exactly what the next
+ * command needs — it is the difference between "launched" and "usable".
+ */
+async function waitForCmuxSocket(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    for (const candidate of CMUX_SOCKETS) {
+      try {
+        accessSync(candidate.startsWith("/") ? candidate : join(home(), candidate), fsConstants.F_OK);
+        return true;
+      } catch {
+        /* Not listening yet. */
+      }
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 /**
  * Wake a session in a terminal: focus it when it is already running, otherwise
  * open a new one there.

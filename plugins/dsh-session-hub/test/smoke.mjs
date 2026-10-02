@@ -194,18 +194,74 @@ for (const agent of agents) {
   // prompts, so a `## 场景路由` heading is part of a message, not a boundary.
   const turns = await call({ op: "messages", key: card.key });
   assert.equal(turns.body.ok, true, `messages failed for ${agent}`);
-  const usersAsTurns = turns.body.messages.filter((message) => message.role === "user").length;
+  // Re-derive the sections from the transcript here, so the comparison is
+  // against the transcript rather than against the reader's own output — and so
+  // the window below can be checked properly.
+  const sections = [];
+  {
+    let role = null;
+    let lines = [];
+    const flush = () => {
+      if (role === null) return;
+      const text = lines.join("\n").trim();
+      if (text !== "") sections.push({ role, text });
+      lines = [];
+    };
+    for (const line of markdown.split("\n")) {
+      const heading = /^## (User|Assistant|Compacted)(?: · (.+))?$/.exec(line.trim());
+      if (heading !== null) {
+        flush();
+        role = heading[1] === "User" ? "user" : heading[1] === "Assistant" ? "assistant" : "compacted";
+        continue;
+      }
+      if (role !== null) lines.push(line);
+    }
+    flush();
+  }
+
   assert.equal(
-    usersAsTurns,
-    (markdown.match(/^## User(?: ·|$)/gm) ?? []).length,
-    `${agent}: every "## User" heading must become exactly one turn`,
+    turns.body.total,
+    sections.length,
+    `${agent}: the reported total must count every message in the transcript`,
   );
-  assert.equal(
-    turns.body.messages.filter((message) => message.role === "assistant").length,
-    (markdown.match(/^## Assistant(?: ·|$)/gm) ?? []).length,
-    `${agent}: every "## Assistant" heading must become exactly one turn`,
-  );
-  assert.ok(turns.body.total >= usersAsTurns, "the total must count every turn");
+
+  if (turns.body.truncated === true) {
+    // A long session is read as a window, and that window must be the *tail* —
+    // the reader opens a conversation at its end. Comparing the window against
+    // the whole transcript is what made this assertion wrong before: it read as
+    // a parsing bug when the transcript had simply outgrown the cap.
+    assert.ok(
+      turns.body.messages.length < sections.length,
+      `${agent}: a truncated read must return fewer messages than the transcript holds`,
+    );
+    const tail = sections.slice(sections.length - turns.body.messages.length);
+    assert.deepEqual(
+      turns.body.messages.map((message) => message.role),
+      tail.map((section) => section.role),
+      `${agent}: a truncated read must return the end of the conversation, not an arbitrary slice`,
+    );
+    assert.equal(
+      turns.body.messages[turns.body.messages.length - 1].text,
+      tail[tail.length - 1].text,
+      `${agent}: and its last turn must be the transcript's last`,
+    );
+  } else {
+    assert.deepEqual(
+      turns.body.messages.map((message) => message.role),
+      sections.map((section) => section.role),
+      `${agent}: every heading must become exactly one turn, in order`,
+    );
+    assert.equal(
+      turns.body.messages.filter((message) => message.role === "user").length,
+      (markdown.match(/^## User(?: ·|$)/gm) ?? []).length,
+      `${agent}: every "## User" heading must become exactly one turn`,
+    );
+    assert.equal(
+      turns.body.messages.filter((message) => message.role === "assistant").length,
+      (markdown.match(/^## Assistant(?: ·|$)/gm) ?? []).length,
+      `${agent}: every "## Assistant" heading must become exactly one turn`,
+    );
+  }
 
   // Every turn says when it happened. The stamp rides on the heading so a turn
   // and its time cannot drift apart.

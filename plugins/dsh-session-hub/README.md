@@ -336,8 +336,10 @@ openPlan: (card) => [
 
 1. **已在 cmux 里运行的会话 → 聚焦它那个 workspace**（`cmux select-workspace`），而不是再 resume 一份
 2. **在 cmux 里新开 workspace 跑 resume 命令**
-3. cmux 没在运行 → **先启动 cmux 再试一次**
+3. cmux 没在运行 → **按 bundle id 启动它，然后轮询它的 socket**，就绪后再试一次
 4. 都不行 → Terminal.app
+
+> 第 3 步的两个细节都不是随手写的。**按 bundle id**（`com.cmuxterm.app`）而不是 `open -a cmux`，因为后者解析的是「应用文件」，比系统认的身份弱。**轮询 socket** 而不是固定 `sleep`：一个 app 启动要多久不是该猜的东西，而 socket 恰好就是下一条命令需要的东西——它是「启动了」和「能用了」的区别。``waitForCmuxSocket`` 看的是 cmux 自己报的两个路径：`~/.local/state/cmux/cmux.sock` 与 `/tmp/cmux.sock`。
 
 > 第 4 步是补上的。cmux 的整套命令只有**裸的 `cmux <path>` 那种形式**会「launches cmux if needed」，`new-workspace` 需要它**已经在跑**（帮助原文：Create a new workspace in the caller's window）。所以 cmux 关着的时候，每一次「打开」都静默落到了 Terminal.app——看起来就像「没有优先用 cmux」。
 
