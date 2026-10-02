@@ -658,16 +658,6 @@ window.__ModuleLoader__.load({
         h("path", { d: "M2.9 13.3h10.2" }));
     }
 
-    /** How each agent signs itself in a row's head. */
-    const AGENT_SHORT = {
-      claude: "cc",
-      codex: "codex",
-      gemini: "gemini",
-      pi: "pi",
-      dsh: "dsh",
-      opencode: "opencode",
-    };
-
     /**
      * The agent, as a short tag in the row head.
      *
@@ -675,6 +665,10 @@ window.__ModuleLoader__.load({
      * as a stray label among the icons. The tag borrows the agent's own colour —
      * deliberately only the `sh-agent-dot-<agent>` class, which sets nothing but
      * `background` and `color`, so the palette stays in one place.
+     *
+     * The text is the agent id itself: it is already short and recognisable, so a
+     * second abbreviation table on top of it would be one more thing to keep in
+     * step with the adapters for no gain.
      */
     function AgentTag({ card, t }) {
       return h(
@@ -683,7 +677,7 @@ window.__ModuleLoader__.load({
           className: `sh-agent-tag sh-agent-dot-${card.agent}`,
           title: card.agentLabel,
         },
-        AGENT_SHORT[card.agent] ?? card.agent,
+        card.agent,
       );
     }
 

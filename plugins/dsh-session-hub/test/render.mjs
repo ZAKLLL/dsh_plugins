@@ -651,7 +651,10 @@ const tagClasses = tags.map((tag) => String(tag.props.className));
 for (const tag of tags) {
   assert.equal(typeof tag.props.title, "string", "the tag must name the agent in full on hover");
   assert.ok(tag.props.title.length > 0, "and the name must not be empty");
-  assert.ok(textOf(tag).length > 0, "the tag must show a short code");
+  assert.ok(
+    ["claude", "codex", "gemini", "pi", "dsh", "opencode"].includes(textOf(tag)),
+    `the tag must read as the agent id, not an abbreviation: ${JSON.stringify(textOf(tag))}`,
+  );
 }
 assert.ok(
   tagClasses.every((cls) => /sh-agent-dot-[a-z]+/.test(cls)),
