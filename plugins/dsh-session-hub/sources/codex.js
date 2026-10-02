@@ -65,7 +65,17 @@ function codexUserText(payload) {
 
 function buildCodex(file, stats, events, truncated) {
   const meta = events.find((event) => event.type === "session_meta")?.payload ?? {};
-  const sessionId = meta.session_id ?? meta.id ?? basename(file, ".jsonl");
+
+  // `id` is this thread's own identity; `session_id` is the **root** session, and
+  // for a subagent thread it equals the parent. Keying on `session_id` therefore
+  // folds every subagent onto its root: measured here, that put 63 threads in one
+  // group and gave them all the root's name, while the thread's own id groups
+  // them correctly (at most 4 segments per id, which is the resume/compaction
+  // case). It is also the id `codex resume` takes.
+  const threadId = meta.id ?? meta.session_id ?? basename(file, ".jsonl");
+  const parentId = typeof meta.parent_thread_id === "string" ? meta.parent_thread_id : null;
+  const isSubagent = meta.thread_source === "subagent" || meta.source?.subagent !== undefined;
+  const sessionId = threadId;
   const cwd = typeof meta.cwd === "string" ? meta.cwd : null;
   const created = toMs(meta.timestamp) ?? Math.round(stats.birthtimeMs ?? 0) ?? null;
 
@@ -108,6 +118,9 @@ function buildCodex(file, stats, events, truncated) {
       bytes: stats.size ?? 0,
       messages,
       partial: truncated,
+      subagent: isSubagent,
+      parentSessionId: parentId !== null && parentId !== threadId ? parentId : null,
+      depth: 0,
       file,
       resumeCommand: sessionId ? `codex resume ${sessionId}` : null,
     },

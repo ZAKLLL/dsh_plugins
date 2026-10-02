@@ -100,15 +100,27 @@ for (const card of list.body.sessions) {
 // A nested session must point at a session that really is in the corpus, and a
 // subagent must never be left dangling — the tree would silently lose it.
 const cardKeys = new Set(list.body.sessions.map((session) => session.key));
+const bySessionId = new Map(list.body.sessions.map((session) => [session.sessionId, session]));
 for (const card of list.body.sessions) {
   if (card.parentKey !== null) {
     assert.ok(cardKeys.has(card.parentKey), `dangling parentKey on ${card.key} -> ${card.parentKey}`);
     assert.notEqual(card.parentKey, card.key, "a session must not parent itself");
   }
-  if (card.subagent) assert.notEqual(card.parentKey, null, `subagent ${card.key} has no resolvable parent`);
+  // A subagent whose parent IS in the corpus must be linked. One whose parent is
+  // not (a deleted rollout, a thread outside the scanned range) is promoted to
+  // the top instead — never dropped. The old form of this assertion demanded a
+  // parent always, which only held while `subagent` was DSH-only.
+  if (card.subagent && card.parentSessionId !== null && bySessionId.has(card.parentSessionId)) {
+    assert.notEqual(card.parentKey, null, `subagent ${card.key} has a parent in the corpus but was not linked`);
+  }
+  if (card.subagent && card.parentKey === null) {
+    assert.ok(cardKeys.has(card.key), "an orphaned subagent must still be listed, not silently dropped");
+  }
 }
 const nested = list.body.sessions.filter((session) => session.parentKey !== null);
-console.log(`  nesting: ${nested.length} sessions linked to a parent`);
+const orphans = list.body.sessions.filter((s) => s.subagent && s.parentKey === null).length;
+console.log(`  nesting: ${nested.length} sessions linked to a parent` +
+  (orphans > 0 ? `, ${orphans} orphaned subagents promoted to the top` : ""));
 
 // Live state: the lightweight poll must cover every card the list returned.
 const status = await call({ op: "status" });

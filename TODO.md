@@ -2,43 +2,34 @@
 
 > 仓库级待办。约定：每项写清「背景 / 决定 / 步骤 / 验收」，完成后从本文件删除并进提交历史。
 
-## 1. 同一条会话被列成很多行（按 (agent, sessionId) 去重）
+## 1. Codex 子代理被算到根会话头上（**已修** `fix: codex 用 thread 自己的 id`）
 
-**现象**：列表里出现 **63 行**同名「修复 sandboxbash 多行命令」（全是 Codex）。不是标题重复，是**同一条会话的多个存储文件各占一行**。
+**现象**：列表里出现 63 行同名「修复 sandboxbash 多行命令」，全是 Codex。
 
-**实测数据**：
-
-```
-会话数: 371 | 唯一 key: 371 | 重复 key: 0
-唯一 (agent, sessionId): 267 | 重复: 104        ← 104 张卡片与其他卡片共用 sessionId（28%）
-最大的一个: 一个 codex sessionId → 14 个文件，合计约 80MB
-```
-
-**原因**：Codex 一条 thread 每跑一轮就写一个 rollout 文件。文件名里是**每次运行的新 uuid**，而文件内容里的 `session_meta.session_id` 是**稳定的 thread id**：
+**根因**：`session_meta` 有**两个 id**，我取错了：
 
 ```
-rollout-2026-09-23T21-25-…-01a0d029….jsonl   ← 文件名 uuid 每次都变
-  内容 session_meta.session_id = 同一个值      ← 我取的是这个，所以识别成同一会话
+subagent:  session_id=019f25a3…  id=019f2699…  parent_thread_id=019f25a3…
+root    :  session_id=019ed32f…  id=019ed32f…
 ```
 
-`inventory` 正确地识别出它们属于同一会话，却仍然**一个文件产出一张卡片**。`codex resume <id>` 用的正是这个 `session_id`，所以它确实是同一会话。
+`session_id` 是**根会话**，对子代理等于父；**`id` 才是这条 thread 自己**。`buildCodex` 取 `session_id`，于是把子代理全都算到根头上——不只是 63 行同名，`codex resume <id>` 也会去 resume 根而不是那个子代理。
 
-**已验证（决定了修法）**：这些 rollout 是**分段**，不是累积快照。判据是取同一 thread 的全部文件、按时间排序后看各自的「第一条用户消息」——实测有 **4 种不同**；若是累积，它们应当全都相同（每个文件都从头开始）。
+实测对照：
 
-**因此合并分两步，第二步才是难点**：
+```
+按 session_id 分组 → 177 组，最大一组 63 段     ← 我原来走这条
+按 id 分组         → 269 组，最大一组  4 段     ← 正确
+```
 
-1. **清单层**（简单）：按 `(agent, sessionId)` 合并卡片——`createdAt` 取最早、`updatedAt` 取最新、`key`/`file` 取最新那个分段作为代表。
-2. **读取层**（难点）：`fullValueByKey` 必须把该会话的**全部分段按时间拼接**，否则点开阅读器只看得到最后一段。这意味着 `key` 不能再等同于单个文件路径——需要一张 `sessionId → 分段文件列表` 的索引，`transcript` / `messages` / `continue` 都走它。
+**修法**：`sessionId` 改用 `meta.id`，并补上 `subagent` / `parentSessionId`（原先这两个字段根本没填）。结果：codex 276 张卡片 269 个唯一 id，最大同 id 组 6 段，**101 条子代理全部正确挂到父节点**，树对 Codex 也生效了。
 
-**步骤**：
+**顺带排除了一个错误结论**：我先前说「rollout 是分段、同一会话被列成多行」——**那个判断是错的**。真正的大头是子代理归属错误。分段确实存在（`compacted` 是真实事件类型，同 id 最多 6 段），但那是个小得多的问题。
 
-- [x] 验证累积 / 分段 → **分段**
-- [ ] `inventory` 建 `sessionId → 有序分段列表` 索引，并据此合并卡片
-- [ ] `fullValueByKey` 支持「一个 key 对应多个文件」，按时间顺序拼接各段的 `body`
-- [ ] `bytes` / `messages` 此时**可以求和**（各段不重叠）
-- [ ] 测试：断言 `(agent, sessionId)` 在清单里唯一；断言合并后的发言数**等于各段之和**
+**仍待做**：
 
-**注意**：`claude` 也有同样现象（一个 sessionId → 6 个文件），不是 Codex 独有。
+- [ ] 同一 `id` 的多段（最多 6 段）仍然一个文件一张卡片——需要按 id 合并，且 `fullValueByKey` 要按时间拼接各段
+- [ ] 子代理标题仍在漏注入文本：最大标题簇是 21 条 `"The following is the Codex agent history"`、8 条 `"## Handoff ### Goal / design User chose…"`——`looksInjected` 需要认这些委派前言
 
 ## 2. 实时视图的详情面板
 
