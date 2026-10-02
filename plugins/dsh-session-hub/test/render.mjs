@@ -467,6 +467,17 @@ assert.ok(
   flatten(tiles[0]).some((node) => node.props?.className === "sh-tile-badge sh-tile-badge-wait"),
   "a session waiting on approval must be badged on its tile",
 );
+// The title is what makes a tile useful: without it the grid only says that
+// something is running, not what.
+const tileTitleNodes = flatten(live.tree).filter(
+  (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-tile-title"),
+);
+assert.equal(tileTitleNodes.length, 1, "every tile must carry the session title");
+assert.equal(textOf(tileTitleNodes[0]), FAKE_LIVE.title, "the tile must show that session's own title");
+assert.ok(
+  flatten(live.tree).some((node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-tile-head")),
+  "a tile must lay its agent and duration out on a head row",
+);
 
 // The detail panel is what a click opens; the selection is seeded above.
 const detail = hostElements(live.tree, "sh-lp-card");

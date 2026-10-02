@@ -352,15 +352,17 @@ window.__ModuleLoader__.load({
 .sh-lp-title{color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;font-weight:600;overflow-wrap:anywhere}
 .sh-lp-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
 .sh-live-detail{margin-top:8px}
-.sh-tiles{flex-wrap:wrap;gap:6px;display:flex}
-.sh-tile{border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);cursor:pointer;color:inherit;font:inherit;text-align:left;flex-direction:column;gap:2px;padding:7px 8px;width:106px;min-height:66px;display:flex;overflow:hidden}
+.sh-tiles{gap:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr))}
+.sh-tile{border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);cursor:pointer;color:inherit;font:inherit;text-align:left;flex-direction:column;gap:4px;padding:9px 10px;min-height:100px;display:flex;overflow:hidden}
 .sh-tile:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .sh-tile:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:1px}
 .sh-tile-on{border-color:var(--color-blue-500)}
 .sh-tile-wait{border-color:var(--dsw-alias-state-error-primary)}
 .sh-tile-agent{color:var(--dsw-alias-label-primary);font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sh-tile-proj{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sh-tile-foot{margin-top:auto;align-items:center;gap:4px;display:flex;min-width:0}
+.sh-tile-head{align-items:center;gap:5px;min-width:0;display:flex}
+.sh-tile-title{color:var(--dsw-alias-label-primary);font-size:12px;line-height:16px;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;white-space:normal}
+.sh-tile-proj{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sh-tile-foot{margin-top:auto;align-items:center;gap:5px;display:flex;min-width:0}
 .sh-tile-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
 .sh-tile-badge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;line-height:13px;padding:0 4px}
 .sh-tile-badge-wait{color:var(--dsw-alias-state-error-primary)}
@@ -1846,13 +1848,21 @@ window.__ModuleLoader__.load({
             },
             title: [session.agentLabel, session.cwd].filter(Boolean).join(" · "),
           },
-          h("span", { className: `sh-agent-dot sh-agent-dot-${session.agent}`, "aria-hidden": true }),
-          h("span", { className: "sh-tile-agent" }, session.agentLabel),
-          h("span", { className: "sh-tile-proj" }, session.project ?? "\u2014"),
           h(
-            "span",
-            { className: "sh-tile-foot" },
+            "div",
+            { className: "sh-tile-head" },
+            h("span", { className: `sh-agent-dot sh-agent-dot-${session.agent}`, "aria-hidden": true }),
+            h("span", { className: "sh-tile-agent" }, session.agentLabel),
+            h("span", { className: "sh-spacer" }),
             h("span", { className: "sh-tile-time" }, formatDuration(session.elapsedMs)),
+          ),
+          // The title is the point of a tile: without it the grid says "something
+          // is running" but not what.
+          h("span", { className: "sh-tile-title" }, session.title),
+          h(
+            "div",
+            { className: "sh-tile-foot" },
+            h("span", { className: "sh-tile-proj" }, session.project ?? "\u2014"),
             pending !== null &&
               h(
                 "span",
