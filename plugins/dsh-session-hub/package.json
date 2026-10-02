@@ -14,6 +14,8 @@
   },
   "files": [
     "index.js",
+    "shared.js",
+    "sources/",
     "client.js",
     "hook.mjs",
     "cordis.patch.yml",
