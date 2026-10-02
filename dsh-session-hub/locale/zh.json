@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agents 会话管理",
+    "description": "把本机所有 coding agent 的会话汇总到一个面板——DSH、Claude Code、Codex、Gemini，跨全部项目收集；可拖进当前对话作为会话历史交给我，也可一键用原 agent 打开续接，还能按项目直接起一个新会话。"
+  }
+}

@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# Git commit-msg hook - 规范数字分身的提交信息
+# 格式: 类型: 简要描述
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+if [ -z "$COMMIT_MSG" ]; then
+    echo -e "${RED}错误: 提交信息不能为空${NC}"
+    exit 1
+fi
+
+if echo "$COMMIT_MSG" | grep -q "^Merge"; then
+    exit 0
+fi
+
+if echo "$COMMIT_MSG" | grep -q "^Revert"; then
+    exit 0
+fi
+
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -n 1)
+
+if ! echo "$FIRST_LINE" | grep -qE '^(feat|fix|docs|style|refactor|test|chore|env):'; then
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}提交信息格式不标准${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "正确格式："
+    echo "  类型: 简要描述"
+    echo ""
+    echo "类型选项："
+    echo "  feat     - 新功能"
+    echo "  fix      - 修复问题"
+    echo "  docs     - 文档更新"
+    echo "  style    - 代码格式"
+    echo "  refactor - 重构代码"
+    echo "  test     - 测试相关"
+    echo "  chore    - 杂项任务"
+    echo "  env      - 环境变更"
+    echo ""
+    echo "示例："
+    echo "  feat: 添加部署脚本"
+    echo "  docs: 更新学习笔记"
+    echo "  fix: 修复通用工具 bug"
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    read -p "是否重新编辑提交信息？(y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+
+    echo ""
+    echo "自动添加默认格式..."
+    echo "chore: $COMMIT_MSG" > "$COMMIT_MSG_FILE"
+    echo -e "${GREEN}已使用默认格式: chore: ...${NC}"
+fi
+
+DESCRIPTION=$(echo "$COMMIT_MSG" | head -n 1 | sed -E 's/^(feat|fix|docs|style|refactor|test|chore|env):\s*//')
+
+if [ ${#DESCRIPTION} -gt 72 ]; then
+    echo -e "${YELLOW}警告: 第一行描述超过 72 个字符（当前: ${#DESCRIPTION}）${NC}"
+fi
+
+echo -e "${GREEN}✓ 提交信息格式检查通过${NC}"
+exit 0

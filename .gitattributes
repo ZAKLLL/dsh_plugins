@@ -1,0 +1,4 @@
+# 统一使用 LF，避免跨平台检出时破坏脚本 shebang 与 JS 源文件
+* text=auto eol=lf
+*.png binary
+*.svg text eol=lf

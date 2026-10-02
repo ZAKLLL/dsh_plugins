@@ -1,0 +1,10 @@
+# Scratch material, not part of any plugin.
+
+# Extracted copies of the DSH runtime packages and the DSH plugin-authoring
+# skill, kept only as an API reference while writing plugins here. Disposable:
+# delete both and re-extract from the app bundle whenever they go stale.
+.ref/
+.research/
+
+# Transcripts the Session Hub plugin materializes into a workspace.
+.dsh-session-hub/

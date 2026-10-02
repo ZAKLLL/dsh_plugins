@@ -1,0 +1,9 @@
+# Bundle patch layer for dsh-session-hub.
+#
+# The row loads this package's main entry (`index.js`) as the Host half, which
+# owns the cross-agent session scan and serves it to the browser over the
+# shared `/api` Fetch route. The `dsh.client` declaration in package.json makes
+# the web app load `client.js` as the browser half.
+- insert:
+    - id: session-hub
+      name: dsh-session-hub

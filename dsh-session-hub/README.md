@@ -1,0 +1,459 @@
+# dsh-session-hub · 会话中枢
+
+把**本机所有 coding agent 的会话**汇总到一个面板里——DSH、Claude Code、Codex、Gemini CLI——跨全部项目收集，然后：
+
+- **拖进输入框**：把那个会话的完整历史作为文件交给当前 agent，让它自己解析、接着推进。
+- **「在此续接」**：把历史物化到当前工作区，并把引用写进当前草稿（等价、更省事的路径）。
+- **「在 cmux 继续」/「在 DSH 打开」**：非 DSH 会话用 `cmux new-workspace` 按它自己的 resume 命令唤起；DSH 会话直接在 DSH 里打开。
+- **按项目分组、可收起**；**运行中的会话有实时绿点**。
+
+面向的场景是：**你同时用多个 agent、跨很多项目干活，会话散落在各家的私有目录里**。这个插件负责收集与归一，至于「这个历史该怎么读、怎么接」——交给 agent 自己判断。
+
+---
+
+## 它从哪里收集
+
+| agent | 目录 | 格式 |
+| --- | --- | --- |
+| DSH | `~/.dsh/sessions/<slug>/<sessionId>/session.v4.jsonl.zstd` | Zstandard（**多帧串联**）+ JSONL |
+| Claude Code | `~/.claude/projects/<slug>/**.jsonl` | JSONL |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | JSONL |
+| Gemini CLI | `~/.gemini/tmp/<project>/chats/**.jsonl` | JSONL（`$set` 补丁流） |
+
+四家的格式完全不同，解析器各自独立。实测本机 **378 个会话、约 470ms 完成一次全量扫描**。
+
+### 标题从哪来
+
+每个 agent 都有自己的自动命名，能抓的都抓了——**优先级从高到低**：
+
+| agent | 标题来源 | 说明 |
+| --- | --- | --- |
+| DSH | `session/title` 事件的**最后一个** | 官方契约是「三源（`fallback`/`provider`/`user`）**最新者胜**」，所以取最后一条；我最初只取了第一条，那是错的 |
+| Claude Code | `ai-title` 事件的**最后一个** | Claude 会随对话演进重新生成，取第一条会把早期猜测冻住 |
+| Codex | **`~/.codex/session_index.jsonl` 的 `thread_name`** | Codex 把模型生成的线程名写在这个索引里，**不在 rollout 文件里**——205 条有名字，如「编写 SkillStudio 使用说明」 |
+| Gemini CLI | 无 | 只有 `$set.summary`（原始模型响应），不是标题 |
+
+拿不到时按序兜底：**首条真实人类消息 → 第一条助手回复 → `(untitled)`**。
+
+两类需要特别处理：
+
+- **注入内容被当成标题**。实测抓到 Codex 的 `<codex_internal_context>`、`<codex_delegation>`、`## Referenced chats`、`## Code review guidelines`、`# AGENTS.md instructions`；Claude 的 `<local-command-caveat>`、`<teammate-message>`、`## Context Usage`；以及 DSH 自己的 `Current runtime context`。通用规则是「以含 `-`/`_` 的尖括号标签开头」，所以用户粘 `<div>` 仍算他自己的话。
+- **子 agent 会话没有人类回合**。DSH 会用 `origin: "subagent"` / `delegationDepth > 0` 标出来，它的「首条用户消息」其实是父级委派的 prompt（"You are researching…"），不该当标题——这类改用**第一条助手回复**（"I'll research the DSH plugin API…"）。
+
+效果：`(untitled)` 从 **67 个降到 6 个**（共 378 个会话）。
+
+### 各个格式里踩到的坑（都已处理）
+
+- **DSH 的 zstd 是多帧串联的**。`zlib.zstdDecompressSync` 只解第一帧（212 字节），必须按魔数逐个定位帧边界并串联解码。魔数出现在压缩数据内部不会出错：在那里截断的切片解不开，会自动尝试下一个边界。
+- **`FileHandle.read` 会短读**。不循环读满，前缀会比预期小一个数量级，标题和消息会凭空丢失。
+- **前缀读取必须丢弃被截断的尾行**，否则一条长记录会让整行 JSON 解析失败。
+- **Codex 的真实提问在 61KB 之后**。开头是 `session_meta` 与 `base_instructions`，所以读取要按需增长，而不是固定读一块。
+- **agent 会把注入内容写成 user 消息**，而它们会被当成会话标题。实测抓到：Codex 的 `# AGENTS.md instructions`、`<environment_context>`、`<codex_internal_context>`、`<codex_delegation>`、`## Referenced chats`、`## Code review guidelines`；Claude 的 `<bizContext>`、`<local-command-caveat>`、`<teammate-message>`、`## Context Usage`。这些既不能当标题，也不该淹掉 transcript。通用规则是「以带 `-`/`_` 的尖括号标签开头」，因此用户粘贴 `<div>` 仍算他自己的话。
+- **Gemini 的消息列表在文件末尾**（最后一条 `$set.messages`），但中间还夹着逐条追加的消息对象，前缀读取和完整读取要走不同的取法。
+- **有些会话根本没有人类回合**（委派/自动化跑起来的）。标题退回**第一条助手回复**，比 `(untitled)` 有用得多——本机 `(untitled)` 从 67 个降到 7 个。
+
+### 两条读取路径
+
+- **列表**：读一个**按需增长的前缀**（128KB 起，最多 2MB），拿到「记录头 + 第一条真实人类消息」就停。所以 `messages` 在卡上是下界，卡会以 `partial: true` 标出来，UI 显示成 `12+ 条消息`。
+- **transcript**：读**整个文件**再渲染。列表里看到的 `partial` 不影响它。
+
+---
+
+## 置顶
+
+**项目**和**会话**都能置顶，而且**会话置顶是在它所在的项目内置顶**——只浮到该分组的最上面，不会跑到整个列表顶部。
+
+| | 入口 | 表现 |
+| --- | --- | --- |
+| 会话 | 标题右侧的图钉格：**已置顶时常亮**（蓝色实心），未置顶时只在**行悬停**时出现（空心） | 在该分组内排到最前；分组排序不受影响 |
+| 项目 | 表头悬停后出现在 🗑 左边的图钉按钮 | 整个分组排到最前；表头有一个常亮的图钉标记 |
+
+图钉格是**它自己的开关**，没有再往悬停操作区塞第四个图标。项目置顶优先于分组大小排序；会话置顶优先于时间排序，**同一档内仍按时间倒序**（`Array.sort` 是稳定的）。
+
+**状态存在插件自己的文件里**，不借用任何 agent 的存储：
+
+```
+~/.dsh/session-hub/state.json
+{ "version": 1, "projects": ["<工作区完整路径>"], "sessions": ["<会话 key>"] }
+```
+
+理由：四家 agent 没有一个现成的「pinned」概念可以借用，而往别人的存储里塞自己的偏好是越界。写文件走**临时文件 + rename**，中断不会丢光全部置顶。
+
+**删除会顺手清理置顶**：会话被删后它的 pin 也会摘掉（批量删除只写一次文件，不是每个会话写一次），所以状态文件不会长出指向空气的条目。
+
+---
+
+## 删除会话
+
+行末的 🗑 会打开一个**确认弹窗**（显示标题、agent、即将删除的确切路径），确认后才动手。**项目表头悬停时也有一个 🗑**，一次删掉该项目下的全部会话——跨所有 agent。删除的是**原始 agent 自己的存储**：
+
+| agent | 删除目标 |
+| --- | --- |
+| DSH | `~/.dsh/sessions/<slug>/<sessionId>/` —— **整个目录**（含 `session.v4.jsonl.zstd` 与 `session.lock`） |
+| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl` |
+| Codex | `~/.codex/sessions/…/rollout-*.jsonl`，**外加从 `session_index.jsonl` 摘掉它的 `thread_name` 条目**（否则会留下一个指向已删会话的名字） |
+| Gemini CLI | `~/.gemini/tmp/<project>/chats/*.jsonl` |
+
+### 整项目删除
+
+- 弹窗列出**项目路径、会话总数、涉及的 agent**。
+- **正在运行的会话默认跳过**，不阻断整批——批量删除应该删掉能删的、然后如实报告剩下的。弹窗会说明跳过了几个，并给一个「同时删除这 N 个运行中的会话」勾选项。
+- 结果显示为「已删除 N 个，跳过 M 个」。
+- 重复提交同一批是安全的：已删掉的 key 报为 **skipped，不是错误**。
+
+> **一条真实的数据缺陷，顺手修了**：分组原本按项目**目录名**（`cwd` 的最后一段）做键。这台机器上有**三个不同目录都叫 `new-chat`**，会被合并成一组——按显示名删就会跨三个项目误删。现在分组键是**完整工作区路径**，显示名只用于展示，完整路径放在表头 tooltip 上。
+
+### 三条护栏
+
+删除不可逆、且落在工作区之外，所以宿主侧有三道检查（`test/delete.mjs` 逐条验证）：
+
+1. **key 必须能解析成本插件真正列出来过的会话**；
+2. **目标路径必须在该 agent 自己的存储根之内**——`~/.claude/history.jsonl` 这种同目录下但不在 `projects/` 里的文件会被拒绝；
+3. **进程还活着的会话拒绝删除**，除非调用方显式传 `force`。单条删除时 UI 把按钮变成红色的「仍然删除」；批量删除时改成勾选框。
+
+批量接口还多一层：**单次最多 2000 个 key**，防止一个失控的请求走遍磁盘。批量删除**只删调用方发来的那些 key**——也就是你**看到的那一批**。所以开着 agent 筛选或搜索时，「整组删除」删的是筛选后的那一组，而不是筛选前。
+
+Codex 的索引是**先写临时文件再 rename** 重写的，写到一半被打断不会把索引截断。
+
+**刻意没做的事**：cmux 的 hook 记录不动。它按 session id 索引，只是给卡片做装饰；卡片的文件没了，残留记录就是惰性的。而那个文件 cmux 自己也在写，去改它才真的有风险。
+
+> 删除 DSH 会话时如果 DSH 正开着它，界面可能报错——这是删掉别人脚下文件的本性。运行中的会被护栏挡住，但「已关闭却仍挂在界面里」的会话仍需你自行刷新。
+
+---
+
+## 实时运行状态
+
+**主来源是进程表，不是 cmux。**
+
+| 来源 | 覆盖 | 判据 | 需要配合吗 |
+| --- | --- | --- | --- |
+| **进程表** | Claude / Codex / Gemini | `ps -axo pid=,command=` 里那个进程是否真的在跑 | **不需要**——直接开在终端里的也看得见 |
+| DSH `ctx.agents` | DSH 会话 | 进程内 agent 注册表的 `status === "running"`，精确 | 不需要 |
+| cmux hook 记录 | cmux 启动的那些 | 记录里的 **PID 是否存活** | 只在 cmux 里跑的才有 |
+
+### 进程表怎么映射到会话
+
+1. **命令行里带会话 id** → 直接对上：Claude / Gemini 是 `--resume <id>`，Codex 是子命令 `resume <id>`。
+2. **新开的、命令行里没有 id** → 用 `lsof -a -p <pid> -d cwd -Fn` 取它的工作目录，配上**该目录下最新的那个会话**——对刚启动的 agent 来说，那正是它自己建的那个。
+
+匹配的是**可执行文件名**而不是整条命令行，所以扫描进程自己（一个跑 `ps` 的 `node`）不会被误判成 agent。
+
+> 一开始我**只用 cmux** 判断存活，这是个错误的前提：你很多 agent 是直接开在终端里的，cmux 根本没有它们的记录。现在 cmux 降级成「补充来源」——它仍有用，因为它的记录同时带 session id 和 pid，能补上进程表推不出来的映射。
+
+> **另一个踩到的坑**：cmux 的 `agent_lifecycle` 字段**不可信**。实测 11 条记录里 8 条写着 `"running"`，但对应 PID 全都早就死了——那是 `Stop` 钩子没触发留下的。**真正的判据始终是进程是否存在**（`process.kill(pid, 0)`，`EPERM` 也算活着），`agent_lifecycle` 只作旁证。
+
+面板打开时每 3 秒轮询一个**只读实时状态**的轻量操作：不重扫目录、不重新解析，只在已经解析好的卡片上重算存活状态。可以点「只看运行中」过滤。
+
+**实测**：你新开的那个 `claude --resume 7d5d2d45-…`（cmux 里没有它的任何记录）现在被进程表识别为 `source: "process"`，并正确挂到了它的会话上。
+
+---
+
+## 实时预览
+
+右侧栏那个 tab 有**两个模式**：**会话**（清单）和**实时**（正在跑的 agent）。
+
+实时模式给每个运行中的 agent 一张卡：**它收到了什么输入、产出到哪了、以及这个读数是从哪来的**，每 2 秒刷新。
+
+**每张卡和清单里的一行拥有完全相同的动作**：**在此续接**（把历史放进当前草稿）和**用 cmux 继续**（在它自己的 agent 里唤起），并且**同样可以拖进输入框**——两个模式共用同一套动作函数和同一套拖拽载荷。
+
+```
+● 实时 · 3 个运行中                              [↻]
+┌────────────────────────────────────────────────┐
+│ ● Claude Code  work_tree_dev              2m   │
+│   IN   commit这个修复吧                         │
+│   OUT  已提交：9679ee19 · fix(session) 回收…    │
+│   从它自己的会话记录读取                          │
+└────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│ ● Codex  work_tree_dev                    刚刚  │
+│   IN   设计 Hook 主动事件 API                    │
+│   OUT  方案已先冻结并落盘，暂不继续实现…          │
+│   由 hook 上报                                   │
+└────────────────────────────────────────────────┘
+```
+
+### 两个数据源，后者优先
+
+| 来源 | 怎么来 | 需要 agent 配合吗 |
+| --- | --- | --- |
+| **从会话记录推导** | 读每个运行中会话**自己存储的尾部**（DSH 的 zstd 按帧边界切、其余直接切 JSONL），取最后一条人类输入和最后一条助手输出 | **不需要**，开箱即用 |
+| **hook 上报** | agent 往 `~/.dsh/session-hub/hooks.jsonl` **追加一行 JSON** | 需要，但只是一行 |
+
+每张卡底部会写明这条读数来自哪个来源，不猜、不混。
+
+**性能**：尾部读取按 `mtime + size` 缓存——agent 不写就完全不重读。所以 2 秒一次的轮询在空闲时是零磁盘开销。
+
+---
+
+## 让别的 agent 注册进来
+
+hook 机制**写在本插件里**，任何能执行命令的 agent 追加一行就算注册：
+
+```sh
+node /path/to/dsh-session-hub/hook.mjs \
+  --agent claude --session "$SESSION_ID" --phase working \
+  --input "用户问了什么" --output "目前产出的内容"
+```
+
+也可以走 stdin：`echo '{"agent":"codex","sessionId":"…","phase":"working"}' | node hook.mjs`（flag 覆盖 stdin）。字段：`agent`、`sessionId` 必填，其余 `phase` / `input` / `output` / `cwd` / `title` / `at` 可选。**缺少 agent 或 session 的记录会被直接丢弃**，不会张冠李戴。
+
+它**永远不会以非零码失败**——hook 跑在别的产品的一轮对话里，预览坏掉不能连累那个 agent。
+
+### 为什么是文件而不是 HTTP 接口
+
+`/api` 上的路由**在浏览器信任围栏之内**：它要求浏览器 cookie 或进程启动令牌。而一个 hook 是普通 shell 命令，手里两样都没有。所以用**只能追加的 spool 文件**——`O_APPEND` 单次写入，多个 hook 并发也只会整行交错，不会写半行。
+
+### 接线示例
+
+**Claude Code**（`~/.claude/settings.json`）。它的 hook 会把 `{ session_id, prompt, hook_event_name, … }` 从 stdin 交给命令，而 sink 认识这些字段名——所以**不用 `jq`，直接透传 stdin 就是完整记录**：
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
+      "command": "node /path/to/dsh-session-hub/hook.mjs --agent claude --session \"$CLAUDE_CODE_SESSION_ID\" --phase working" }] }],
+    "Stop": [{ "hooks": [{ "type": "command",
+      "command": "node /path/to/dsh-session-hub/hook.mjs --agent claude --session \"$CLAUDE_CODE_SESSION_ID\" --phase done" }] }]
+  }
+}
+```
+
+> 会话 id 的环境变量名是 **`CLAUDE_CODE_SESSION_ID`**（我一开始写成了 `CLAUDE_SESSION_ID`，是从这台机器的 claude 二进制里核对出来的）。`UserPromptSubmit` 与 `Stop` 两个事件名也已核对。
+
+**Codex**：用它的 `notify` 配置指向同一个 sink。
+
+**任何自制 agent**：在开始一轮时和产出时各追加一行即可，本插件不需要知道你的实现。
+
+> 注意：**不注册也能用**。预览的默认路径是从会话记录推导，所以装完插件就有内容；hook 只是让你能把更准的「当前输入 / 当前输出」推上来。
+
+---
+
+## 用原 agent 唤起会话
+
+非 DSH 会话的按钮是**「在 cmux 继续」**，它执行：
+
+```sh
+cmux new-workspace --cwd <会话的 cwd> --command "<resume 命令>" --name "<agent> · <标题>" --focus true
+```
+
+resume 命令按 agent 各自的口径拼：
+
+| agent | 命令 |
+| --- | --- |
+| Claude Code | `claude --resume <sessionId>` |
+| Codex | `codex resume <sessionId>` |
+| Gemini CLI | `gemini --resume <sessionId>` |
+
+cmux CLI 的查找顺序：`CMUX_BUNDLED_CLI_PATH` → `PATH` 里的 `cmux` → `/Applications/cmux.app/Contents/Resources/bin/cmux`。找不到 cmux、或者 `new-workspace` 失败，就退回 Terminal.app 执行同一条命令；再不行就把命令复制到剪贴板。**无论走哪条路，实际执行的命令都会在按钮 tooltip 上显示**。
+
+DSH 会话不走 cmux——它本来就在 DSH 里，客户端直接 `uiWorkspace.openSession()`。
+
+> 注意：这里用的是**朴素的 resume 命令**，不会自动补上你当初的启动参数（比如 `--dangerously-skip-permissions`）。cmux 的记录里存有原始 `launch_arguments`，但自动加上权限绕过标志是个安全决定，所以刻意没做。
+
+---
+
+## 用法
+
+**两个入口，同一份清单：**
+
+| 入口 | 位置 | 适合 |
+| --- | --- | --- |
+| **右侧栏 Tab**「会话」 | 右侧栏 guide 页里选，或从 tab 条的 **+** 打开 | **拖拽**——栏就在对话旁边，不遮挡输入框 |
+| 侧栏底部「会话中枢」 | Settings 上方 | 全屏总览 |
+
+1. 打开任一个入口，面板内容一致：**按项目分组的紧凑清单**（点分组标题收起/展开）、按 agent 筛选、全字段搜索、**只看运行中**。
+2. **每个分组默认只展开最新修改的 10 条顶层会话**，底部一条「查看更多 · 剩余数」每次再放 10 条，全展开后变成「收起」。
+3. **子代理会话收在父会话下面，是一棵树**，不再平铺：
+
+   ```
+   ▾ 🗂 work_tree_dev                                      147
+       ● 我想做一个插件，在你这里一                    3   2分钟
+         ├ ● I'll research the DSH plugin API from …
+         ├ ● I'll start by exploring the reference …
+         └ ● I'll research this systematically. …
+       ● 帮我分析一下cc 是怎么做的                     3   8分钟
+         ├ ● Let me start exploring the codebase…
+         └ ● Let me start by exploring the relevant…
+   ```
+
+   父行左侧的小箭头就是展开开关（带后代数量徽标）；**分页只对顶层行计数**，子会话不会把分页刷爆。
+4. 每一行就是左侧栏那种形态：**展开箭头位（固定 14px，保持标题对齐）→ 16px 前导位（agent 配色圆点，运行中的会呼吸）→ 标题 → 右侧相对时间 → 悬停时时间让位给三个图标按钮**。
+5. 行操作：
+   - **拖进输入框**（↓ 图标）→ 历史成为附件，我就能读到。**在右侧栏里拖是最顺的**——不需要任何 pointer-events 技巧。
+   - **在此续接**（↓ 图标）→ 把 transcript 写成 `<当前工作区>/.dsh-session-hub/<agent>-<标题>-<短id>.md`，并把一段引用提示插进**当前草稿**（光标处，失败则替换草稿）。回车发送即可。
+   - **用原 agent 继续**（↗ 图标）→ 见上一节；鼠标悬停能看到**确切会执行的命令**。
+   - **删除**（🗑 图标）→ 删这一个会话；**项目表头悬停时也有 🗑**，一次删掉该项目的全部会话。都见下一节。
+
+### 树是怎么来的
+
+DSH 的会话头里有 `parentSession`、`origin: "subagent"`、`delegationDepth`，所以父子关系是**记录里的事实**，不是猜的。宿主在扫描后做一次连接（按 session id、限定同 agent），客户端在每个分组内建树。
+
+两条刻意的降级：
+
+- **父会话不在同一分组、或被筛选掉了**，子会话就**留在顶层**而不是被藏起来——树不能因为过滤而吞掉会话。
+- **父会话不存在**（记录被删、被裁掉）同理，子会话升为顶层。
+
+`test/smoke.mjs` 会断言：每个 `parentKey` 都必须指向清单里真实存在的卡，且**任何 `subagent` 会话都不允许没有可解析的父**——否则它会从树里静默消失。
+
+### 视觉语言是照抄左侧栏的
+
+行高 32px、圆角 `--dsw-radius-md`、悬停 `--dsw-alias-interactive-bg-hover`、标题 14px/20px、时间 10px 且**悬停时被行操作替换**、项目表头 34px 带文件夹图标——这些数值全部取自 `dsh-client-ui-workspace` 自己的样式表，不是估的。插件不 import 任何 Harness 客户端包，图标是自己画的 inline SVG。
+
+> 右侧栏 Tab 是**会话作用域**的，框架直接把当前 composer 的 `inputActions` 交给它，所以「在此续接」在那边不需要任何桥。全屏遮罩在 root 作用域，才需要 `conversation.composer.dock` 上那个不渲染的桥来转发。
+
+> 「在此续接」写入的目录是**当前会话自己的工作区**，由宿主按当前 sessionId 反查它的 `cwd` 得到——这样 agent 一定读得到。查不到才退回临时目录，此时提示里给的是绝对路径。
+
+---
+
+## 结构
+
+```
+dsh-session-hub/
+├── package.json        # dsh.bundle.patch + dsh.client.platform
+├── cordis.patch.yml    # 插入 session-hub 这一行
+├── index.js            # 宿主半边：四个扫描器 + 统一模型 + 实时状态 + 预览 + transcript + 删除 + 置顶 + /api 路由
+├── client.js           # 客户端半边：侧栏入口 / 全屏面板 / 右侧栏 tab（会话·实时）/ 输入框桥 / 删除弹窗
+├── hook.mjs            # hook 汇聚入口：任何 agent 追加一行即可注册
+├── locale/{en,zh}.json # 插件卡片显示文案
+├── icon.svg
+└── test/
+    ├── render.mjs      # 渲染回归（真实 client.js + 极简 React）
+    ├── reload.mjs      # 热重载替换宿主实现（必须独立进程）
+    ├── smoke.mjs       # 宿主半边冒烟测试（读真实会话库）
+    ├── delete.mjs      # 删除路径与护栏（自建 fixture，用完即清）
+    ├── pins.mjs        # 置顶状态（备份并还原你真实的置顶文件）
+    └── preview.mjs     # 实时预览与 hook 汇聚（备份并还原真实的 spool）
+```
+
+### 两端怎么通信
+
+typert 的 `@Remote` 需要整套代码生成流水线，第三方插件走不通；而官方的 `ctx.sessionProjections` 是 per-session 的投影机制，装不下「扫全盘文件系统」这种需求。
+
+所以走 DSH 给插件留的正式传输层：
+
+```js
+// 宿主
+ctx.connection.fetch.register({
+  path: "/api/session-hub",
+  methods: ["POST"],
+  requestBody: "buffered",
+  fetch: (request) => ...,
+});
+```
+
+它挂在共享的 `/api` 通道上，**自动经过 Host/Origin 信任围栏与浏览器鉴权**（`/api` 前缀处理器先 `admit()` 再分发）。浏览器侧同源 `fetch` 即可，Cookie 自带。
+
+所有操作走同一个精确路由，用 body 里的 `op` 分发：`list` / `transcript` / `continue` / `open`。
+
+### 客户端挂载点
+
+| 插槽 | id / key | 作用 |
+| --- | --- | --- |
+| `sidebar.footer.action` | `session-hub` | 侧栏底部入口按钮 |
+| `shell.overlay` | `session-hub-panel` | 全屏面板 |
+| `shell.overlay` | `session-hub-confirm` | 删除确认弹窗（放这里，右侧栏那种会裁切溢出的容器里塞不下弹窗） |
+| `sidebar.right.pane.tab` | `dsh-session-hub` | **右侧栏 tab 的 body**——「会话 / 实时」两个模式（会话作用域，自带 `inputActions`） |
+| `sidebar.right.pane.tab.title` | `dsh-session-hub` | 该 tab 的 chip 内容 |
+| `conversation.composer.dock` | `session-hub-bridge` | 会话作用域、不渲染，只把当前 composer 的 `inputActions` 发布给全屏面板 |
+
+右侧栏 tab 走的是**每个官方 tab 类型都走的公开两段式注册**：
+
+```js
+ctx.inject(["sidebarRightTabs"], (scoped) => {
+  scoped.effect(() => scoped.sidebarRightTabs.register({
+    id: "dsh-session-hub",        // type 身份，也是 body/chip 的 key
+    kind: "dsh-session-hub",
+    title: () => t("tab"),
+    guide: [{ order: 30, title: () => t("tab"), description: () => t("guide"), icon: HubIcon }],
+  }), "…");
+  scoped.slots.inject("sidebar.right.pane.tab", () => scoped.slots.register({
+    name: "sidebar.right.pane.tab", key: "dsh-session-hub", locale: NS,
+  }, SidebarTab));
+});
+```
+
+`guide` 数组就是让它在右侧栏 guide 页里出现的那一项。
+
+**为什么全屏面板需要那座桥**：面板在 root 作用域，但「续接」必须写进**当前会话**的草稿，而 `inputActions` 只在会话作用域的插槽里拿得到。右侧栏 tab 本身就是会话作用域，所以直接拿得到——桥只为遮罩存在。
+
+### 拖拽怎么落到输入框
+
+卡片是原生 HTML5 `draggable`：
+
+- `dragstart` 时把**已预取**的 transcript 装成 `File` 塞进 `dataTransfer.items`——所以指针一进入卡片就开始取历史，`dragstart` 里才能同步拿到内容。
+- 同时把覆盖层的 `pointer-events` 置为 `none`（**命令式改样式，不触发重渲染**——拖拽过程中重渲染拖拽源会让某些浏览器取消拖拽），这样 `dragover` 才能穿透到下面输入框的附件区。
+- 输入框侧接收的是标准文件投递，因此拿到的是普通附件。
+
+### 已知边界
+
+- 卡片上的「消息数」在前缀读取时是**下界**（列表改版后不再显示，transcript 仍是全量）。
+- transcript 是**有损归一**：省略了 reasoning、工具结果与附件，工具调用只留一行标记。这是刻意的——续接需要的是对话主线，不是完整回放。
+- 前缀上限 2MB。极长的会话在列表里可能拿不到标题，此时**退回第一条助手回复**作为标题（这类会话通常是委派/自动化跑起来的，本来就没有人类回合）；两条都没有才显示 `(untitled)`——本机 378 个会话里剩 7 个。
+- 「运行中」以**进程是否存在**为准。进程表的映射在两种情况下是推断而不是事实：命令行没带会话 id 时按工作目录取最新的那个；以及 PID 复用理论上可能误判。
+- Claude / Codex / Gemini 的实时状态来自**本机进程表**（`ps` + `lsof`），所以任何终端里跑的都能看见——但也意味着**只能看见本机的**，远程机器上的进程看不见。
+- 唤起走 `cmux new-workspace`，**开发中未实机触发**（那会拉起 cmux 窗口）；CLI 解析、参数拼写与降级链已验证，实际唤起需要你点一次。
+- 无配置文件：四个来源按固定约定自动发现，插件不导出 `Config`。
+
+---
+
+## 测试
+
+```sh
+node test/render.mjs   # 渲染回归：把真实 client.js 在 Node 里渲染一遍
+node test/reload.mjs   # 热重载必须真的换掉宿主实现（两代模块实例共用 globalThis）
+node test/smoke.mjs    # 采集 / 标题 / transcript / 实时状态 / 树的完整性
+node test/delete.mjs   # 删除路径、批量删除与三条护栏
+node test/pins.mjs     # 置顶的读写、两种置顶互不干扰、删除时清理
+node test/preview.mjs  # 实时预览的推导、hook 覆盖与 sink 的输入校验
+```
+
+### 为什么有 reload 测试
+
+宿主的路由是用 `ctx.connection.fetch.register` 注册的，而它的 owner 是 **connection 服务自己的 ctx（root）**，不是本插件的 fiber。所以**路由比插件活得久**，并且一直带着**第一次注册时那个闭包**。
+
+如果被调度的 handler 存在模块作用域里，插件重载会重新求值模块、造出一个**全新的对象**，而那条老路由根本不会去读它——于是**第一代实现会永远服务下去**，客户端已经更新了，宿主还在老代码上，表现就是一连串 `unknown op: xxx`。
+
+修法是把可变的那一半放进**进程级全局槽**（`Symbol.for("dsh-session-hub/route-state")`），路由在**调用时**才去读它。`test/reload.mjs` 用两次**带查询串的 import** 造出两个真正的模块实例（共用同一个 `globalThis`），断言第一代的路由对象最终会调度到第二代的 handler——并且 `pin` / `preview` / `status` / `delete-many` 都能通过那条老路由到达。
+
+> 这个坑真实发生过：插件装好后我改了十几轮宿主代码，而**运行中的宿主一直停在第一代**。客户端每轮都热重载（插槽占用者是活跃的），所以我误以为两端都生效了。客户端侧我一直在验证，宿主侧我只验证了「测试通过」而不是「进程生效」——这是方法上的漏洞，现在由这个测试补上。
+
+### 为什么有 render 测试
+
+这个仓库没有浏览器可用，而 **`node --check` 看不见渲染期错误**。
+
+有一次我把 `const pinnedSessions` 写在 `groups` 的 `useMemo` **之后**，而依赖数组 `[visible, group, pinnedSessions, pinnedProjects]` 就在那个 useMemo 上——依赖数组是**立即求值**的，于是 `HubBody` 每次渲染都抛 `ReferenceError: Cannot access 'pinnedSessions' before initialization`。整个右侧栏 tab 就此变成死的。
+
+而它在外部只留下**一个信号**：插槽占用者的 `active: false`。读完 `dsh-client-ui-slots` 才知道 `active` 的真义是「未被 abdicate」——而 `abdicated` 的定义是「**渲染崩溃后被退役的 entry**，其注册留在账本上但不再参与投影」。换句话说，`active: false` 就是**这个组件崩了**。
+
+所以 `test/render.mjs` 干了三件事：
+
+1. 用 `window.__ModuleLoader__` 的**真实握手机制**加载 `client.js`；
+2. 用桩 Cordis 上下文跑 `apply()`，抓出注册的六个组件（并按 `name#key` 区分——右侧栏 body 和它的 chip 用的是同一个 key）；
+3. 用一个极简 React（函数组件即普通函数、函数元素立即求值、hook 单元按组件身份持久化）**真的渲染一遍**，并把 `fetch` 转发到真实的宿主路由，让数据链路也是真的。
+
+实测渲染出 **56 个分组、167 行、2 个展开箭头、167 个置顶开关**——167 行正好是「每组前 10 条 + 子代理行」的分页结果，2 个箭头正好是两个有子代理的会话。
+
+它同时也验证了：`apply()` 恰好注册六个组件（多一个少一个都失败）、桥与确认弹窗在无状态时确实渲染 `null`、以及**没有一行标题渲染出 `undefined`**。它还**渲染实时模式**（用一个合成的 preview 响应，不依赖这台机器当下在跑什么），断言那张卡带着**两个动作**、**可拖拽**、并且 IN / OUT / 来源三者都渲染出来。
+
+`smoke` 按 Cordis 的真实调用方式驱动宿主半边（`apply(ctx)` → 抓取注册的路由 → 发真实 `Request`），断言：清单非空且按时间倒序、每张卡字段完整（含 `running`/`subagent` 布尔与 `live` 证据）、每个有会话的 agent 都能产出含 `## User` 的 transcript、**`status` 轮询覆盖清单里的每一个 key 且与 `runningCount` 一致**、**任何被判为「运行中」的卡都必须给出证据来源**、`continue` 必须落在当前工作区内、未知 key/op 返回结构化错误、重复 `apply()` 不因路由已注册而抛出。
+
+`delete` **不碰你任何真实会话**：它在真实存储目录里用唯一命名的 fixture 自建临时会话（Claude / Codex / DSH 各一个，外加一批用于批量删除的 3 个 Claude + 1 个 DSH；DSH 那几个靠一个假 agent 注册表标记成「运行中」），跑完断言后在 `finally` 里全部删除并把 `session_index.jsonl` 按备份逐字节还原。它验证的是：
+
+- 会话确实从原存储消失，重新扫描后不会复活；
+- Codex 索引条目一并摘掉；
+- 越界路径被拒（并确认那个文件仍在）；
+- 运行中无 `force` 被拒、有 `force` 成功；
+- **批量删除：普通会话全部删掉、运行中的被跳过而不阻断整批、加 `force` 后补上、已删的 key 报为 skipped 而非错误、空批次被拒**。
+
+---
+
+## 安装 / 卸载
+
+已安装在 `desktop` profile（`link:` 到本目录，改代码即时生效）。
+
+- 卸载：`plugin_manager` → `remove_bundle`，目标 `dsh-session-hub`
+- 重装：`plugin_manager` → `install_bundle`，目标为本目录绝对路径
+
+## 许可
+
+Apache-2.0

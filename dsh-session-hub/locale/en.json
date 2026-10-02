@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agents Session Manager",
+    "description": "Every coding-agent session on this machine in one panel — DSH, Claude Code, Codex and Gemini — collected across all projects, draggable into the current chat as a transcript, reopenable in its original agent, and able to start a new session per project."
+  }
+}
