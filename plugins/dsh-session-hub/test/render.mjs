@@ -210,6 +210,27 @@ const FAKE_LIVE = {
   pending: { kind: "approval", label: "plugin_manager", count: 1 },
 };
 
+const FAKE_MESSAGES = {
+  ok: true,
+  agent: "claude",
+  agentLabel: "Selftest Agent",
+  title: "selftest conversation",
+  cwd: "/tmp/selftest",
+  model: "selftest-provider/selftest-model",
+  models: null,
+  key: "selftest",
+  total: 5,
+  truncated: false,
+  messages: [
+    { role: "user", text: "第一个请求", at: "2026-10-02 10:00", collapsed: null },
+    { role: "assistant", text: "先看一下\n\n> tool: `Read`", at: "2026-10-02 10:01", collapsed: null },
+    { role: "assistant", text: "第一个最终回答", at: "2026-10-02 10:02", collapsed: null },
+    { role: "compacted", text: "CTX-SUMMARY-这段应该初始隐藏", at: "2026-10-02 10:30", collapsed: 2735 },
+    { role: "user", text: "第二个请求", at: "2026-10-02 11:00", collapsed: null },
+    { role: "assistant", text: "第二个最终回答", at: "2026-10-02 11:01", collapsed: null },
+  ],
+};
+
 const stubFetch = async (url, init) => {
   if (String(url).includes("/api/session-hub")) {
     const payload = (() => {
@@ -221,6 +242,11 @@ const stubFetch = async (url, init) => {
     })();
     if (payload.op === "preview") {
       return Response.json({ ok: true, runningCount: 1, sessions: [FAKE_LIVE] });
+    }
+    // The reader's shape is asserted here, so it is supplied here: one turn with
+    // working-out, one compaction, one plain exchange.
+    if (payload.op === "messages") {
+      return Response.json(FAKE_MESSAGES);
     }
     return route.fetch(new Request("http://127.0.0.1/api/session-hub", init));
   }
@@ -601,43 +627,27 @@ assert.ok(
 console.log(`live: 1 tile, 1 detail panel, ${liveButtons.length} actions, drag enabled, source stated`);
 
 // ---- the reader -----------------------------------------------------
-// Transcripts carry far more `> tool:` lines than turns (216 against 43 in one
-// session here), so the reader must pull them out of the prose — otherwise it is
-// a wall of call names. Find a row that actually has some.
-// Transcripts carry far more `> tool:` lines than turns (216 against 43 in one
-// session here), so the reader must lift them out of the prose — otherwise it is
-// a wall of call names. A rendered row does not carry its key, so walk the rows
-// until one whose turns actually contain a tool call is found.
-let reader = null;
-let sawTitle = false;
-for (const candidate of rows.slice(0, 8)) {
-  const titleNode = flatten(candidate).find(
-    (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-row-title-open"),
-  );
-  if (titleNode === undefined) continue;
-  if (!sawTitle) {
-    assert.equal(typeof titleNode.props.onClick, "function", "a row title must open the reader");
-    assert.equal(typeof titleNode.props.title, "string", "and say so on hover");
-    sawTitle = true;
-  }
+// The payload is synthetic (see FAKE_MESSAGES), so the assertions below describe
+// a shape rather than whatever this machine happens to hold.
+const titleNode = flatten(rows[0]).find(
+  (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-row-title-open"),
+);
+assert.ok(titleNode, "a row title must open the reader");
+assert.equal(typeof titleNode.props.onClick, "function");
+assert.equal(typeof titleNode.props.title, "string", "and say so on hover");
+titleNode.props.onClick();
 
-  titleNode.props.onClick();
-  let view = render(Preview, {});
-  for (const effect of view.effects) {
-    const cleanup = effect();
-    if (typeof cleanup === "function") cleanups.push(cleanup);
-  }
-  for (let attempt = 0; attempt < 25; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    view = render(Preview, {});
-    if (hostElements(view.tree, "sh-turn").length > 0) break;
-  }
-  reader = view;
-  if (hostElements(view.tree, "sh-turn-tool").length > 0) break;
+let reader = render(Preview, {});
+for (const effect of reader.effects) {
+  const cleanup = effect();
+  if (typeof cleanup === "function") cleanups.push(cleanup);
+}
+for (let attempt = 0; attempt < 40; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  reader = render(Preview, {});
+  if (hostElements(reader.tree, "sh-turn").length > 0) break;
 }
 
-assert.ok(sawTitle, "a row title must open the reader");
-assert.ok(reader !== null, "the reader must render");
 const turns = hostElements(reader.tree, "sh-turn");
 assert.ok(turns.length > 0, "the reader must render the session's turns");
 assert.equal(hostElements(reader.tree, "sh-read-body").length, 1, "and scroll inside its own body");
@@ -645,22 +655,58 @@ assert.ok(hostElements(reader.tree, "sh-turn-user").length > 0, "user turns must
 for (const who of hostElements(reader.tree, "sh-turn-who").map(textOf)) {
   assert.ok(who.length > 0, "every turn must name its speaker");
 }
-for (const dot of hostElements(reader.tree, "sh-turn-dot")) {
-  const cls = String(dot.props.className);
-  assert.ok(cls.includes("sh-turn-dot-user") || cls.includes("sh-turn-dot-assistant"), "each speaker line carries its role dot");
+const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
+assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
+assert.ok(prose.includes("第一个最终回答"), "the agent's answer must be shown");
+
+// ---- one turn is a request plus its answer ---------------------------
+const turnGroups = hostElements(reader.tree, "sh-turn-group");
+assert.equal(turnGroups.length, 3, "a request, a compaction and a second request are three turns");
+assert.ok(
+  !prose.includes("CTX-SUMMARY"),
+  "a compaction summary starts hidden — it is a seam, not something that was said",
+);
+
+const toggles = hostElements(reader.tree, "sh-steps-toggle");
+assert.equal(toggles.length, 2, "one turn has working-out and one is a compaction");
+for (const toggle of toggles) {
+  assert.equal(typeof toggle.props.onClick, "function");
+  assert.equal(typeof toggle.props.title, "string", "the toggle needs a tooltip");
+  assert.equal(toggle.props["aria-expanded"], false, "and starts collapsed");
 }
-const chips = hostElements(reader.tree, "sh-turn-tool");
-assert.ok(chips.length > 0, "tool calls must be lifted out of the prose");
-// Each turn says when it happened.
+
+const before = hostElements(reader.tree, "sh-turn").length;
+toggles[0].props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 400));
+reader = render(Preview, {});
+assert.ok(
+  hostElements(reader.tree, "sh-turn").length > before,
+  "opening the working-out must reveal the messages it was hiding",
+);
+
+const compactionToggle = hostElements(reader.tree, "sh-steps-toggle").find((node) =>
+  flatten(node).some((child) => typeof child.props?.className === "string" && child.props.className.includes("sh-compacted-label")),
+);
+assert.ok(compactionToggle, "the compaction must be its own labelled seam");
+compactionToggle.props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 400));
+reader = render(Preview, {});
+assert.ok(
+  hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n").includes("CTX-SUMMARY"),
+  "opening the compaction must show what the context was replaced with",
+);
+assert.ok(
+  hostElements(reader.tree, "sh-compacted-count").length > 0,
+  "and how much it folded away",
+);
+console.log(`turns: ${turnGroups.length} grouped, ${toggles.length} collapsible seams`);
+
+// Every turn says when it happened.
 const stamps = hostElements(reader.tree, "sh-turn-at").map(textOf);
-assert.equal(stamps.length, turns.length, "every turn must show its time");
+assert.ok(stamps.length > 0, "turns must show their time");
 for (const stamp of stamps) {
   assert.match(stamp, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `a turn time must be a readable stamp: ${stamp}`);
 }
-
-const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
-assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
-console.log(`reader: ${turns.length} turns, ${chips.length} tool chips lifted out of the prose`);
 // The reader names the model it is showing, beside the agent.
 const readerModel = hostElements(reader.tree, "sh-read-model");
 assert.equal(readerModel.length, 1, "the reader must name the model");

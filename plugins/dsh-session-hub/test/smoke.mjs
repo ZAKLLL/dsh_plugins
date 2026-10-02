@@ -190,6 +190,30 @@ for (const agent of agents) {
   );
   assert.match(stamped[0].at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `${agent}: the stamp must be a readable local time`);
 
+  // Compaction is a seam in the record, not a turn: the summary is what the
+  // context was replaced with, and the heading says how much was folded away.
+  const compactedHeadings = (markdown.match(/^## Compacted(?: ·|$)/gm) ?? []).length;
+  const compactedTurns = turns.body.messages.filter((message) => message.role === "compacted");
+  assert.equal(
+    compactedTurns.length,
+    compactedHeadings,
+    `${agent}: every compaction heading must become exactly one marker`,
+  );
+  for (const marker of compactedTurns) {
+    assert.equal(typeof marker.at, "string", `${agent}: a compaction marker must be placed in time`);
+    assert.ok(marker.text.length > 0, `${agent}: and must carry what it was replaced with`);
+  }
+  const counts = (markdown.match(/^## Compacted · [^·]+? · \d+ tokens$/gm) ?? []).length;
+  assert.equal(
+    compactedTurns.filter((marker) => marker.collapsed !== null).length,
+    counts,
+    `${agent}: a heading stating a token count must carry it through`,
+  );
+  if (compactedTurns.length > 0) {
+    console.log(`  ${agent}: ${compactedTurns.length} compaction marker(s), ` +
+      `${compactedTurns.filter((m) => m.collapsed !== null).length} with a token count`);
+  }
+
   const users = (markdown.match(/^## User(?: ·|$)/gm) ?? []).length;
   const assistants = (markdown.match(/^## Assistant(?: ·|$)/gm) ?? []).length;
   assert.ok(users + assistants > 0, `transcript for ${agent} rendered no messages`);

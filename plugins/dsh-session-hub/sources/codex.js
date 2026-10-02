@@ -15,6 +15,7 @@ import {
   attribute, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
   handoffName,
+  compactionHeading,
   turnHeading,
 } from "../shared.js";
 
@@ -87,6 +88,13 @@ function buildCodex(file, stats, events, truncated) {
   let messages = 0;
 
   for (const event of events) {
+    // Compaction is its own event, outside the response items, and it carries
+    // the summary the context was replaced with.
+    if (event.type === "compacted") {
+      const summary = typeof event.payload?.message === "string" ? event.payload.message.trim() : "";
+      if (summary !== "") lines.push(compactionHeading(event.timestamp, null), "", summary, "");
+      continue;
+    }
     if (event.type !== "response_item") continue;
     const payload = event.payload ?? {};
     if (payload.type !== "message") continue;

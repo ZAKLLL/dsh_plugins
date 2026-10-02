@@ -343,3 +343,20 @@ export function turnHeading(role, at) {
   const stamp = stampOf(at);
   return stamp === null ? `## ${role}` : `## ${role} · ${stamp}`;
 }
+
+/**
+ * A compaction marker, carrying what it folded away.
+ *
+ * Kept inline in the body rather than listed separately so it lands at the point
+ * in the conversation where it actually happened — a summary displaced from its
+ * position says nothing about what came before or after it. It also means the
+ * transcript handed to another agent carries the fact that the context was
+ * replaced, and by what.
+ */
+export function compactionHeading(at, collapsed) {
+  const parts = ["Compacted"];
+  const stamp = stampOf(at);
+  if (stamp !== null) parts.push(stamp);
+  if (Number.isFinite(collapsed) && collapsed > 0) parts.push(`${Math.round(collapsed)} tokens`);
+  return `## ${parts.join(" · ")}`;
+}

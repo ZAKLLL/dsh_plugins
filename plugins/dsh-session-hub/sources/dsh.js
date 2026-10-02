@@ -13,6 +13,7 @@ import {
   UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
   handoffName,
+  compactionHeading,
   turnHeading,
 } from "../shared.js";
 
@@ -36,6 +37,9 @@ async function buildDsh(file, stats) {
   const lines = [];
   let messages = 0;
   let assistantTitle = "";
+  // How many tokens the next summary is about to fold away. `compaction/prune`
+  // states it just before the summary arrives.
+  let shadowed = 0;
   for (const event of events) {
     if (event.type === "user/message") {
       if (event.data?.role !== "user" && event.data?.source?.kind !== "user") continue;
@@ -51,6 +55,15 @@ async function buildDsh(file, stats) {
       lines.push(turnHeading("Assistant", event.time), "", body, "");
     } else if (event.type === "tool/call") {
       lines.push(`> tool: \`${event.data?.name ?? "tool"}\``, "");
+    } else if (event.type === "compaction/prune") {
+      shadowed = Number(event.data?.shadowedTokenCount) || shadowed;
+    } else if (event.type === "compaction/summary") {
+      // The summary is what the context was replaced with, so it belongs in the
+      // record at this point. The wrapper tags are this harness's own framing,
+      // not part of the summary.
+      const body = textOf(event.data?.summary).replace(/^<compacted-summary>\s*/, "").replace(/\s*<\/compacted-summary>$/, "");
+      if (body !== "") lines.push(compactionHeading(event.time, shadowed), "", body, "");
+      shadowed = 0;
     }
   }
 

@@ -110,6 +110,13 @@ window.__ModuleLoader__.load({
       focusIn: "Jump to the {terminal} window it is already running in",
       openInVscode: "Open this project in VS Code",
       detailModel: "Model",
+      stepsCount: "{n} intermediate steps",
+      compacted: "Context compacted here",
+      showSummary: "Show what it was replaced with",
+      hideSummary: "Hide the summary",
+      collapsedTokens: "{n} tokens folded away",
+      showSteps: "Show the working-out",
+      hideSteps: "Hide the working-out",
       openedEditor: "Opened in {editor}",
       readSession: "Read this conversation",
       loading: "Loading…",
@@ -221,6 +228,13 @@ window.__ModuleLoader__.load({
       focusIn: "跳到它正在运行的 {terminal} 窗口",
       openInVscode: "用 VS Code 打开这个项目",
       detailModel: "模型",
+      stepsCount: "{n} 条中间过程",
+      compacted: "上下文在此被压缩",
+      showSummary: "查看压缩后替换成了什么",
+      hideSummary: "收起摘要",
+      collapsedTokens: "折叠了 {n} tokens",
+      showSteps: "展开中间过程",
+      hideSteps: "收起中间过程",
       openedEditor: "已在 {editor} 中打开",
       readSession: "阅读这条会话",
       loading: "加载中…",
@@ -397,6 +411,15 @@ window.__ModuleLoader__.load({
 .sh-read-model{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34%}
 .sh-read-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;flex-direction:column;gap:14px;padding:14px 16px 18px;display:flex}
 .sh-read-note{color:var(--dsw-alias-label-tertiary);font-size:11px;text-align:center}
+.sh-turn-group{flex-direction:column;gap:8px;display:flex;min-width:0}
+.sh-compacted{border-left:2px solid var(--dsw-alias-state-business-primary,var(--color-blue-500));padding-left:9px}
+.sh-compacted-label{color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:600}
+.sh-compacted-count{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px;font-variant-numeric:tabular-nums}
+.sh-turn-compacted .sh-turn-body{border-left:0;padding-left:0}
+.sh-turn-compacted .sh-turn-text{color:var(--dsw-alias-label-tertiary)}
+.sh-steps-toggle{border:0;background:0 0;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;align-items:center;gap:5px;padding:2px 0;display:flex;font-size:11px;text-align:left}
+.sh-steps-toggle:hover{color:var(--dsw-alias-label-secondary)}
+.sh-steps-toggle:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:2px;border-radius:var(--dsw-radius-xs)}
 .sh-turn{flex-direction:column;gap:5px;display:flex;min-width:0}
 .sh-turn-head{align-items:center;gap:6px;display:flex}
 .sh-turn-dot{border-radius:50%;flex:none;width:6px;height:6px}
@@ -528,6 +551,32 @@ window.__ModuleLoader__.load({
       if (session.agent === "dsh") return t("openInDsh");
       if (typeof session.surfaceId === "string" && session.surfaceId !== "") return t("focusIn", { terminal: "cmux" });
       return [t("resumeIn", { terminal: "cmux" }), session.resumeCommand].filter(Boolean).join(" — ");
+    }
+
+    /**
+     * Group a flat message list into turns.
+     *
+     * A turn is one user request plus everything the agent did about it. Only the
+     * last agent message is the answer; the ones before it are the working-out —
+     * narration between tool calls, which is what makes a long session unreadable
+     * when every message is laid out flat.
+     */
+    function groupTurns(messages) {
+      const turns = [];
+      let current = null;
+      for (const message of messages) {
+        // Anything that is not the agent's own output opens a turn: a request,
+        // or a compaction marker — which is a boundary in its own right.
+        const opens = message.role !== "assistant";
+        if (opens || current === null) {
+          current = { lead: opens ? message : null, steps: [] };
+          turns.push(current);
+          if (!opens) current.steps.push(message);
+          continue;
+        }
+        current.steps.push(message);
+      }
+      return turns;
     }
 
     /**
@@ -1803,6 +1852,9 @@ window.__ModuleLoader__.load({
         const [error, setError] = React.useState(null);
 
         const close = React.useCallback(() => reading.set(null), []);
+        // Which turns have their working-out opened. Kept per dialog, not per
+        // turn, so opening one does not close another.
+        const [expanded, setExpanded] = React.useState(() => new Set());
         useEscape(state !== null, close);
 
         React.useEffect(() => {
@@ -1827,34 +1879,106 @@ window.__ModuleLoader__.load({
         const turns =
           data === null
             ? null
-            : data.messages.map((message, index) => {
-                const who = message.role === "user" ? t("you") : data.agentLabel;
-                return h(
-                  "div",
-                  { key: index, className: `sh-turn sh-turn-${message.role}` },
+            : (() => {
+                const render = (message, who, key) =>
                   h(
                     "div",
-                    { className: "sh-turn-head" },
-                    h("span", { className: `sh-turn-dot sh-turn-dot-${message.role}`, "aria-hidden": true }),
-                    h("span", { className: "sh-turn-who" }, who),
-                    h("span", { className: "sh-spacer" }),
-                    typeof message.at === "string" && h("span", { className: "sh-turn-at" }, message.at),
-                  ),
-                  h(
-                    "div",
-                    { className: "sh-turn-body" },
-                    turnParts(message.text).map((block, part) =>
-                      block.kind === "tool"
-                        ? h(
-                            "div",
-                            { key: part, className: "sh-turn-tool" },
-                            h("span", { className: "sh-turn-tool-name" }, block.text),
-                          )
-                        : h("div", { key: part, className: "sh-turn-text" }, block.text),
+                    { key, className: `sh-turn sh-turn-${message.role}` },
+                    h(
+                      "div",
+                      { className: "sh-turn-head" },
+                      h("span", { className: `sh-turn-dot sh-turn-dot-${message.role}`, "aria-hidden": true }),
+                      h("span", { className: "sh-turn-who" }, who),
+                      h("span", { className: "sh-spacer" }),
+                      typeof message.at === "string" && h("span", { className: "sh-turn-at" }, message.at),
                     ),
-                  ),
-                );
-              });
+                    h(
+                      "div",
+                      { className: "sh-turn-body" },
+                      turnParts(message.text).map((block, part) =>
+                        block.kind === "tool"
+                          ? h("div", { key: part, className: "sh-turn-tool" }, h("span", { className: "sh-turn-tool-name" }, block.text))
+                          : h("div", { key: part, className: "sh-turn-text" }, block.text),
+                      ),
+                    ),
+                  );
+
+                return groupTurns(data.messages).map((turn, index) => {
+                  // A compaction is not a request with an answer; it is a seam in
+                  // the record, and its own summary is what it was replaced with.
+                  if (turn.lead !== null && turn.lead.role === "compacted") {
+                    const openSummary = expanded.has(index);
+                    return h(
+                      "div",
+                      { key: index, className: "sh-turn-group sh-compacted" },
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "sh-steps-toggle",
+                          "aria-expanded": openSummary,
+                          onClick: () => {
+                            setExpanded((current) => {
+                              const next = new Set(current);
+                              if (next.has(index)) next.delete(index);
+                              else next.add(index);
+                              return next;
+                            });
+                          },
+                          title: openSummary ? t("hideSummary") : t("showSummary"),
+                        },
+                        h(
+                          "span",
+                          { className: `sh-group-arrow${openSummary ? " sh-group-arrow-open" : ""}`, "aria-hidden": true },
+                          h(ChevronIcon),
+                        ),
+                        h("span", { className: "sh-compacted-label" }, t("compacted")),
+                        typeof turn.lead.at === "string" && h("span", { className: "sh-turn-at" }, turn.lead.at),
+                        turn.lead.collapsed !== null &&
+                          h("span", { className: "sh-compacted-count" }, t("collapsedTokens", { n: turn.lead.collapsed.toLocaleString() })),
+                      ),
+                      openSummary && h("div", { className: "sh-turn sh-turn-compacted" },
+                        h("div", { className: "sh-turn-body" }, h("div", { className: "sh-turn-text" }, turn.lead.text))),
+                    );
+                  }
+                  const steps = turn.steps;
+                  const answer = steps.length > 0 ? steps[steps.length - 1] : null;
+                  const middle = steps.slice(0, -1);
+                  const open = expanded.has(index);
+                  const toggle = () => {
+                    setExpanded((current) => {
+                      const next = new Set(current);
+                      if (next.has(index)) next.delete(index);
+                      else next.add(index);
+                      return next;
+                    });
+                  };
+                  return h(
+                    "div",
+                    { key: index, className: "sh-turn-group" },
+                    turn.lead !== null && render(turn.lead, t("you"), `u${index}`),
+                    middle.length > 0 &&
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "sh-steps-toggle",
+                          "aria-expanded": open,
+                          onClick: toggle,
+                          title: open ? t("hideSteps") : t("showSteps"),
+                        },
+                        h(
+                          "span",
+                          { className: `sh-group-arrow${open ? " sh-group-arrow-open" : ""}`, "aria-hidden": true },
+                          h(ChevronIcon),
+                        ),
+                        t("stepsCount", { n: middle.length }),
+                      ),
+                    middle.length > 0 && open && middle.map((message, step) => render(message, data.agentLabel, `m${index}-${step}`)),
+                    answer !== null && render(answer, data.agentLabel, `a${index}`),
+                  );
+                });
+              })();
 
         return h(
           "div",

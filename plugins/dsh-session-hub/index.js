@@ -808,21 +808,24 @@ function messagesFrom(body) {
   const messages = [];
   let role = null;
   let at = null;
+  let collapsed = null;
   let lines = [];
   const flush = () => {
     if (role === null) return;
     const text = lines.join("\n").trim();
-    if (text !== "") messages.push({ role, text, at });
+    if (text !== "") messages.push({ role, text, at, collapsed });
     lines = [];
   };
   for (const line of String(body ?? "").split("\n")) {
-    // The adapters write `## User · 2026-10-02 15:04`; the stamp is optional so
-    // a dialect that records no time still parses.
-    const heading = /^## (User|Assistant)(?: · (.+))?$/.exec(line.trim());
+    // The adapters write `## User · 2026-10-02 15:04`, and a compaction reads
+    // `## Compacted · 2026-10-02 15:04 · 12491 tokens`. Both stamps are optional
+    // so a dialect that records neither still parses.
+    const heading = /^## (User|Assistant|Compacted)(?: · ([^·]+?))?(?: · (\d+) tokens)?$/.exec(line.trim());
     if (heading !== null) {
       flush();
-      role = heading[1] === "User" ? "user" : "assistant";
+      role = heading[1] === "User" ? "user" : heading[1] === "Assistant" ? "assistant" : "compacted";
       at = heading[2] ?? null;
+      collapsed = heading[3] === undefined ? null : Number(heading[3]);
       continue;
     }
     if (role !== null) lines.push(line);
