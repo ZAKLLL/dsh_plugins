@@ -170,18 +170,28 @@ for (const agent of agents) {
   const usersAsTurns = turns.body.messages.filter((message) => message.role === "user").length;
   assert.equal(
     usersAsTurns,
-    (markdown.match(/^## User$/gm) ?? []).length,
+    (markdown.match(/^## User(?: ·|$)/gm) ?? []).length,
     `${agent}: every "## User" heading must become exactly one turn`,
   );
   assert.equal(
     turns.body.messages.filter((message) => message.role === "assistant").length,
-    (markdown.match(/^## Assistant$/gm) ?? []).length,
+    (markdown.match(/^## Assistant(?: ·|$)/gm) ?? []).length,
     `${agent}: every "## Assistant" heading must become exactly one turn`,
   );
   assert.ok(turns.body.total >= usersAsTurns, "the total must count every turn");
 
-  const users = (markdown.match(/^## User$/gm) ?? []).length;
-  const assistants = (markdown.match(/^## Assistant$/gm) ?? []).length;
+  // Every turn says when it happened. The stamp rides on the heading so a turn
+  // and its time cannot drift apart.
+  const stamped = turns.body.messages.filter((message) => typeof message.at === "string");
+  assert.equal(
+    stamped.length,
+    turns.body.messages.length,
+    `${agent}: every turn must carry the moment it happened`,
+  );
+  assert.match(stamped[0].at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `${agent}: the stamp must be a readable local time`);
+
+  const users = (markdown.match(/^## User(?: ·|$)/gm) ?? []).length;
+  const assistants = (markdown.match(/^## Assistant(?: ·|$)/gm) ?? []).length;
   assert.ok(users + assistants > 0, `transcript for ${agent} rendered no messages`);
   console.log(`  ${agent.padEnd(7)} partial=${String(card.partial).padEnd(5)} ${String(markdown.length).padStart(8)} chars  user=${users} assistant=${assistants}`);
 }

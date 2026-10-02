@@ -807,18 +807,22 @@ const MAX_PREVIEW_MESSAGES = 600;
 function messagesFrom(body) {
   const messages = [];
   let role = null;
+  let at = null;
   let lines = [];
   const flush = () => {
     if (role === null) return;
     const text = lines.join("\n").trim();
-    if (text !== "") messages.push({ role, text });
+    if (text !== "") messages.push({ role, text, at });
     lines = [];
   };
   for (const line of String(body ?? "").split("\n")) {
-    const heading = /^## (User|Assistant)$/.exec(line.trim());
+    // The adapters write `## User · 2026-10-02 15:04`; the stamp is optional so
+    // a dialect that records no time still parses.
+    const heading = /^## (User|Assistant)(?: · (.+))?$/.exec(line.trim());
     if (heading !== null) {
       flush();
       role = heading[1] === "User" ? "user" : "assistant";
+      at = heading[2] ?? null;
       continue;
     }
     if (role !== null) lines.push(line);

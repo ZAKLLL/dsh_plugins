@@ -403,6 +403,7 @@ window.__ModuleLoader__.load({
 .sh-turn-dot-user{background:var(--color-blue-500)}
 .sh-turn-dot-assistant{background:var(--color-green-500)}
 .sh-turn-who{color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.sh-turn-at{color:var(--dsw-alias-label-caption,var(--dsw-alias-label-tertiary));flex:none;font-variant-numeric:tabular-nums;font-size:10px}
 .sh-turn-body{flex-direction:column;gap:5px;min-width:0;display:flex;padding-left:12px}
 .sh-turn-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;line-height:19px}
 .sh-turn-user .sh-turn-body{border-left:2px solid var(--color-blue-500);padding-left:11px}
@@ -1836,6 +1837,8 @@ window.__ModuleLoader__.load({
                     { className: "sh-turn-head" },
                     h("span", { className: `sh-turn-dot sh-turn-dot-${message.role}`, "aria-hidden": true }),
                     h("span", { className: "sh-turn-who" }, who),
+                    h("span", { className: "sh-spacer" }),
+                    typeof message.at === "string" && h("span", { className: "sh-turn-at" }, message.at),
                   ),
                   h(
                     "div",

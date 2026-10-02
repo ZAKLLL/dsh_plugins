@@ -14,6 +14,7 @@ import {
   UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
   handoffName,
+  turnHeading,
 } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
@@ -49,7 +50,7 @@ function buildGemini(file, stats, events, truncated) {
     } else if (assistantTitle === "") {
       assistantTitle = body;
     }
-    lines.push(isHuman ? "## User" : "## Assistant", "", body, "");
+    lines.push(turnHeading(isHuman ? "User" : "Assistant", message?.timestamp), "", body, "");
   }
 
   const cwd = geminiProjectPath(dirname(dirname(file)));

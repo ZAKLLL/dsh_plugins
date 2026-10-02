@@ -13,6 +13,7 @@ import {
   UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
   handoffName,
+  turnHeading,
 } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
@@ -56,7 +57,7 @@ function buildClaude(file, stats, events, truncated) {
       const body = claudeUserText(textOf(blocks));
       if (body === "" || looksInjected(body)) continue;
       messages += 1;
-      lines.push("## User", "", body, "");
+      lines.push(turnHeading("User", event.timestamp), "", body, "");
     } else if (event.type === "assistant") {
       const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
       const body = textOf(blocks);
@@ -64,7 +65,7 @@ function buildClaude(file, stats, events, truncated) {
       if (body === "" && tools.length === 0) continue;
       if (assistantTitle === "" && body !== "") assistantTitle = body;
       messages += 1;
-      if (body !== "") lines.push("## Assistant", "", body, "");
+      if (body !== "") lines.push(turnHeading("Assistant", event.timestamp), "", body, "");
       for (const tool of tools) lines.push(`> tool: \`${tool}\``, "");
     }
   }

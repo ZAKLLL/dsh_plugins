@@ -10,7 +10,7 @@
 
 import { dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
-import { UNTITLED, dumpText, handoffName, home, looksInjected, num, oneLine, projectOf } from "../shared.js";
+import { UNTITLED, dumpText, handoffName, home, looksInjected, num, oneLine, projectOf, turnHeading } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
 const LABEL = "opencode";

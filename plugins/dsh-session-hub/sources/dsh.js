@@ -13,6 +13,7 @@ import {
   UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
   handoffName,
+  turnHeading,
 } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
@@ -41,13 +42,13 @@ async function buildDsh(file, stats) {
       const body = textOf(event.data?.content);
       if (body === "" || looksInjected(body)) continue;
       messages += 1;
-      lines.push("## User", "", body, "");
+      lines.push(turnHeading("User", event.time), "", body, "");
     } else if (event.type === "assistant/message") {
       const body = textOf(event.data?.message?.content);
       if (body === "") continue;
       if (assistantTitle === "") assistantTitle = body;
       messages += 1;
-      lines.push("## Assistant", "", body, "");
+      lines.push(turnHeading("Assistant", event.time), "", body, "");
     } else if (event.type === "tool/call") {
       lines.push(`> tool: \`${event.data?.name ?? "tool"}\``, "");
     }

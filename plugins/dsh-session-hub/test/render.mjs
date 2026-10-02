@@ -651,6 +651,13 @@ for (const dot of hostElements(reader.tree, "sh-turn-dot")) {
 }
 const chips = hostElements(reader.tree, "sh-turn-tool");
 assert.ok(chips.length > 0, "tool calls must be lifted out of the prose");
+// Each turn says when it happened.
+const stamps = hostElements(reader.tree, "sh-turn-at").map(textOf);
+assert.equal(stamps.length, turns.length, "every turn must show its time");
+for (const stamp of stamps) {
+  assert.match(stamp, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `a turn time must be a readable stamp: ${stamp}`);
+}
+
 const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
 assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
 console.log(`reader: ${turns.length} turns, ${chips.length} tool chips lifted out of the prose`);

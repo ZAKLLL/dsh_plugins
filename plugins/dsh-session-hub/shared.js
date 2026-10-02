@@ -320,3 +320,26 @@ export async function dumpText(dir, name, text) {
   await writeFile(path, text, "utf8");
   return { path, name, origin: "dump", bytes: Buffer.byteLength(text, "utf8") };
 }
+
+/** A local wall-clock stamp, to the minute: `2026-10-02 15:04`. */
+export function stampOf(ms) {
+  // Not `Number(ms)`: a null timestamp would become 0 and print as 1970.
+  const resolved = toMs(ms);
+  if (resolved === null) return null;
+  const date = new Date(resolved);
+  if (!Number.isFinite(date.getTime())) return null;
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * A turn heading, carrying the moment it happened.
+ *
+ * The time rides on the heading rather than travelling in a parallel list, so a
+ * turn and its timestamp cannot drift apart — and the transcript a person hands
+ * to another agent keeps the timing too.
+ */
+export function turnHeading(role, at) {
+  const stamp = stampOf(at);
+  return stamp === null ? `## ${role}` : `## ${role} · ${stamp}`;
+}
