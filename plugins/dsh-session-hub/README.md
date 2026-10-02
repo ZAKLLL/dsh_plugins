@@ -22,7 +22,17 @@
 | **pi** | `~/.pi/agent/sessions/<slug>/<时间戳>_<id>.jsonl` | JSONL（头和 DSH 近乎同构） |
 | **opencode** | `~/.local/share/opencode/opencode.db` | **SQLite**（`session` / `message` / `part` 三张表） |
 
-六家的格式互不相同，解析器各自独立。实测本机 **414 个会话**（DSH 17 / Claude 77 / Codex 276 / Gemini 10 / pi 29 / opencode 5）。
+六家的格式互不相同，解析器各自独立。实测本机 **367 个会话**（DSH 17 / Claude 35 / Codex 276 / Gemini 10 / pi 29 / opencode 0）。
+
+### 临时工作区不算项目
+
+有些工具会在**一次性的临时目录**里跑 agent。本机的 `avp-agent` 就是：它每次运行在 `~/blueai_tmp/avp-agent/cc_sessions/<uuid>/` 下起一个 Claude，于是 `~/.claude/projects` 里留下一批这样的会话记录。
+
+这些**不是项目**：目录名是裸 UUID（表头就成了 `c995b594-d09c-43b3-b574-28e9a9df9da1` 这种东西），而且那个工作目录对「回到原 agent 继续」毫无意义。不处理的话，光这一个工具就给面板塞进 **17 个假项目**。
+
+判定规则是**工作目录的 basename 是裸 UUID**——不是写死某个路径，所以别的工具做同样的事也覆盖得到。实测全库 414 个会话里 **41 个命中，其余一个都不中**，所以这条规则不牺牲任何真实项目。
+
+被排除的数量**不静默丢弃**：每个源在 `list` 的 `sources` 里都会报告 `skipped`，测试也断言 `parsed + skipped === total`。实测 claude 源 `35/76, skipped=41`。
 
 **opencode 是唯一一个不是「一堆文件」的源**：它整库存在一个 SQLite 里，所以那一项不走「遍历目录」的形状，而是自己实现 `list` / `full` / `preview` / `remove`，按 session id 查询、读取、删除（三张表的删除包在一个事务里）。读用 `node:sqlite`（运行时自带，**惰性 import**，所以机器上没有 opencode 或 Node 较老时这里就是空列表）。它也是唯一一个**自带 AI 标题**的源——标题直接来自 `session.title` 列。
 

@@ -58,7 +58,24 @@ assert.ok(list.body.sessions.length > 0, "expected at least one session on this 
 console.log(`list: ${list.body.sessions.length} sessions in ${elapsed}ms`);
 console.log(`  cmux CLI: ${list.body.cmux === true ? "found" : "not found"}   running: ${list.body.runningCount}`);
 for (const source of list.body.sources) {
-  console.log(`  ${source.id.padEnd(7)} ${source.parsed}/${source.total}  ${source.root}`);
+  console.log(`  ${source.id.padEnd(7)} ${source.parsed}/${source.total}  skipped=${source.skipped}  ${source.root}`);
+  assert.equal(
+    source.parsed + source.skipped,
+    source.total,
+    `${source.id} must account for every value it found`,
+  );
+}
+
+// A workspace named after a bare UUID is a tool's disposable scratch directory,
+// not a project: leaving those in turned one tool's runs into 17 fake projects.
+// The rule is asserted here so a future change cannot quietly let them back.
+const UUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+for (const card of list.body.sessions) {
+  const name = typeof card.cwd === "string" ? card.cwd.replace(/\/+$/, "").split("/").pop() : "";
+  assert.ok(
+    !UUID_ONLY.test(name),
+    `a scratch workspace must not be listed as a project: ${card.cwd}`,
+  );
 }
 
 // Every card must carry the fields the panel renders.

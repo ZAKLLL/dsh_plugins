@@ -1421,6 +1421,25 @@ function linkFamilies(cards) {
 }
 
 /** Scan every source, attach live state, and return the newest-first inventory. */
+/**
+ * Whether a workspace is a disposable scratch directory rather than a project.
+ *
+ * A directory named after a bare UUID is machine-generated: `avp-agent`, for
+ * instance, makes one per run under `~/blueai_tmp/avp-agent/cc_sessions/` and
+ * starts Claude inside it. Those are not projects. Left in, this one tool's runs
+ * alone appeared as 17 separate "projects" named after UUIDs — and their
+ * workspaces are useless for resuming into anyway.
+ *
+ * Measured against this machine's whole corpus (414 sessions): 41 match, and
+ * nothing else does, so the rule costs no real project.
+ */
+const UUID_DIRECTORY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isScratchWorkspace(cwd) {
+  if (typeof cwd !== "string" || cwd === "") return false;
+  return UUID_DIRECTORY.test(cwd.replace(/\/+$/, "").split("/").pop());
+}
+
 async function inventory(force, ctx) {
   const cards = [];
   const sources = [];
@@ -1437,12 +1456,18 @@ async function inventory(force, ctx) {
             (file) => cachedCard(source, file, force),
           );
     let parsed = 0;
+    let skipped = 0;
     for (const value of values) {
       if (value === null || value === undefined) continue;
+      // A scratch workspace is not a project; it is counted, not silently lost.
+      if (isScratchWorkspace(value.card.cwd)) {
+        skipped += 1;
+        continue;
+      }
       cards.push(value.card);
       parsed += 1;
     }
-    sources.push({ id: source.id, label: AGENT_LABELS[source.id], root, total: values.length, parsed });
+    sources.push({ id: source.id, label: AGENT_LABELS[source.id], root, total: values.length, parsed, skipped });
   }
 
   cards.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
