@@ -11,7 +11,8 @@ import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
 import {
-  UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
+  UNTITLED,
+  attribute, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
   parseJsonl, projectOf, textOf, toMs, trackTool,
   handoffName,
 } from "../shared.js";
@@ -224,16 +225,36 @@ export default defineAdapter({
   build: buildCodex,
   readStoreEvent(event, reading) {
     const payload = event.payload ?? {};
+
+    // The model name rides on context events, not on `session_meta` — that one
+    // only says `model_provider: "custom"` — so it has to be tracked as the
+    // store is walked, and the last one seen is the model in effect.
+    if (typeof payload.model === "string" && payload.model !== "") reading.model = payload.model;
+
     if (event.type === "event_msg" && payload.type === "token_count") {
-      // Codex reports a running total, so this replaces rather than adds.
+      // Codex reports a running total, so the session figure replaces rather
+      // than adds. The per-model split cannot do that: attributing a cumulative
+      // total to the current model would bill every earlier model's tokens to
+      // the last one, so the split takes the difference between two readings.
       const total = payload.info?.total_token_usage ?? {};
-      reading.tokens = {
+      const seen = {
         input: num(total.input_tokens),
         output: num(total.output_tokens) + num(total.reasoning_output_tokens),
         cacheRead: num(total.cached_input_tokens),
         cacheWrite: num(total.cache_write_input_tokens),
         total: num(total.total_tokens),
       };
+      const previous = reading.codexSeen ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+      attribute(reading, {
+        input: Math.max(0, seen.input - previous.input),
+        output: Math.max(0, seen.output - previous.output),
+        cacheRead: Math.max(0, seen.cacheRead - previous.cacheRead),
+        cacheWrite: Math.max(0, seen.cacheWrite - previous.cacheWrite),
+        // Carried through, because it is not the sum of the four above.
+        total: Math.max(0, seen.total - previous.total),
+      });
+      reading.codexSeen = seen;
+      reading.tokens = { ...seen };
     } else if (payload.type === "function_call") {
       trackTool(reading, payload.call_id, payload.name, true);
     } else if (payload.type === "function_call_output") {

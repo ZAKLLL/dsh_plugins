@@ -42,6 +42,9 @@ const MENTION = "@session-selftest";
 // DSH reasoning blocks carry a `text` field too, so a naive reader returns the
 // model thinking out loud instead of its answer.
 const REASONING_TEXT = "SELFTEST-REASONING-do-not-show";
+// DSH names the model on its request header, on the very same store walk that
+// finds pending approvals — one handler has to do both.
+const DSH_MODEL = "selftest-provider/selftest-model";
 
 const RUNNING_INPUT = "把最后那段日志贴给我看看";
 const RUNNING_OUTPUT = "日志在这里，最后一行是超时，我准备把超时从 30s 提到 120s。";
@@ -94,6 +97,10 @@ const PI_WORKSPACE = join(tmpdir(), `dsh-session-hub-pi-${STAMP}`);
 const PI_DIR = join(PI_ROOT, `-dsh-session-hub-${STAMP}`);
 const PI_FILE = join(PI_DIR, `${new Date().toISOString().replace(/[:.]/g, "-")}_${PI_ID}.jsonl`);
 const PI_TOKENS = { input: 4719, output: 235, cacheRead: 1024, cacheWrite: 0, total: 5978 };
+// A session that switched models: the split must show both, not just the last.
+const PI_MODEL_A = 'blueai-relay-200k/glm-5.3';
+const PI_MODEL_B = 'blueai-relay-200k/glm-5.4';
+const PI_TOKENS_B = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, total: 1100 };
 const PI_INPUT = "pi 收到的输入";
 const PI_OUTPUT = "pi 目前的产出";
 const PI_SCRIPT = join(PI_WORKSPACE, "pi-selftest");
@@ -105,6 +112,7 @@ let spoolExisted = true;
 /** One zstd frame over JSONL: a session with one human turn and one reply. */
 function fixture(id, cwd, input, output, extra = []) {
   const header = { type: "session", version: 4, id, createdAt: Date.now(), cwd, isSeeded: false, delegationDepth: 0, agentPreset: "standard" };
+  const request = { type: "request/header", seq: 1, time: Date.now(), data: { header: { config: { provider: "selftest-provider", model: "selftest-model" } } } };
   const user = { type: "user/message", seq: 2, time: Date.now(), data: { role: "user", content: [{ type: "text", text: input }] } };
   const assistant = {
     type: "assistant/message",
@@ -120,7 +128,7 @@ function fixture(id, cwd, input, output, extra = []) {
       },
     },
   };
-  const lines = [header, user, assistant, ...extra].map((event) => JSON.stringify(event));
+  const lines = [header, request, user, assistant, ...extra].map((event) => JSON.stringify(event));
   return zlib.zstdCompressSync(Buffer.from(lines.join("\n") + "\n", "utf8"));
 }
 
@@ -136,6 +144,7 @@ function piFixture(id, cwd, input, output) {
   return (
     [
       JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd }),
+      JSON.stringify({ type: "model_change", id: "mc1", timestamp: new Date().toISOString(), provider: "blueai-relay-200k", modelId: "glm-5.3" }),
       JSON.stringify({ type: "message", id: "m1", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: input }] } }),
       JSON.stringify({
         type: "message",
@@ -144,7 +153,18 @@ function piFixture(id, cwd, input, output) {
         message: {
           role: "assistant",
           content: [{ type: "text", text: output }],
-          usage: { input: PI_TOKENS.input, output: PI_TOKENS.output, cacheRead: PI_TOKENS.cacheRead, cacheWrite: PI_TOKENS.cacheWrite },
+          usage: { input: PI_TOKENS.input, output: PI_TOKENS.output, cacheRead: PI_TOKENS.cacheRead, cacheWrite: PI_TOKENS.cacheWrite, totalTokens: PI_TOKENS.total },
+        },
+      }),
+      JSON.stringify({ type: "model_change", id: "mc2", timestamp: new Date().toISOString(), provider: "blueai-relay-200k", modelId: "glm-5.4" }),
+      JSON.stringify({
+        type: "message",
+        id: "m3",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: output }],
+          usage: { input: PI_TOKENS_B.input, output: PI_TOKENS_B.output, cacheRead: PI_TOKENS_B.cacheRead, cacheWrite: PI_TOKENS_B.cacheWrite, totalTokens: PI_TOKENS_B.total },
         },
       }),
     ].join("\n") + "\n"
@@ -242,6 +262,17 @@ try {
   assert.equal(resolvedPreview.pending, null, "a decided approval must not read as waiting");
   console.log("preview: an unanswered approval reads as waiting, a decided one does not");
 
+  // The model and the approval come from one store walk. They used to live in two
+  // `readStoreEvent` keys on the same object, where the second silently replaced
+  // the first — so this asserts the survivor did not eat the other.
+  const dshUsage = await call({ op: "models", key: pendingCard.key });
+  assert.equal(dshUsage.model, DSH_MODEL, "the model must be read from the request header");
+  assert.equal(
+    pendingPreview.pending?.kind,
+    "approval",
+    "and approval handling must survive alongside it",
+  );
+
   // ---- referencing a session -----------------------------------------
   // Every agent offers this, but what the reference *is* depends on the agent:
   // a DSH session has a native mention, the rest point at their own store.
@@ -313,10 +344,11 @@ try {
   // process table — neither is guessed.
   const tokens = piPreview.tokens;
   assert.ok(tokens, "a pi preview must carry token usage");
-  assert.equal(tokens.input, PI_TOKENS.input, "input tokens must be summed from the store");
-  assert.equal(tokens.output, PI_TOKENS.output, "output tokens must be summed from the store");
-  assert.equal(tokens.cacheRead, PI_TOKENS.cacheRead, "cache reads must be counted");
-  assert.equal(tokens.total, PI_TOKENS.total, "the total must be the sum of the parts");
+  const both = PI_TOKENS.total + PI_TOKENS_B.total;
+  assert.equal(tokens.input, PI_TOKENS.input + PI_TOKENS_B.input, "input tokens must be summed from the store");
+  assert.equal(tokens.output, PI_TOKENS.output + PI_TOKENS_B.output, "output tokens must be summed from the store");
+  assert.equal(tokens.cacheRead, PI_TOKENS.cacheRead + PI_TOKENS_B.cacheRead, "cache reads must be counted");
+  assert.equal(tokens.total, both, "the total must be the sum of the parts across both models");
   assert.ok(piPreview.startedAt > 0, "a running session must report when its process started");
   assert.ok(
     Number.isFinite(piPreview.elapsedMs) && piPreview.elapsedMs > 0,
@@ -333,6 +365,27 @@ try {
   assert.equal(piRef.text, `@${PI_FILE}`, "and cite the session's own artifact path");
   assert.equal(piRef.path, PI_FILE);
   console.log(`reference: pi → ${piRef.text}`);
+
+  // ---- the per-model split -------------------------------------------
+  // A session that switched models reports every one of them; the last model
+  // alone would read as though the whole conversation ran on it.
+  const usage = await call({ op: "models", key: piCard.key });
+  assert.equal(usage.ok, true, `models failed: ${usage.error}`);
+  assert.equal(usage.model, PI_MODEL_B, "the model in effect is the last one announced");
+  assert.ok(usage.models, "a session with usage must report its models");
+  assert.deepEqual(
+    Object.keys(usage.models).sort(),
+    [PI_MODEL_A, PI_MODEL_B].sort(),
+    "every model the session used must appear, not only the last",
+  );
+  assert.equal(usage.models[PI_MODEL_A].total, PI_TOKENS.total, "each model carries its own usage");
+  assert.equal(usage.models[PI_MODEL_B].total, PI_TOKENS_B.total, "and the second model its own");
+  assert.equal(
+    Object.values(usage.models).reduce((sum, entry) => sum + entry.total, 0),
+    usage.tokens.total,
+    "the models must add up to the session total — the check that caught Codex counting cached input twice",
+  );
+  console.log(`models: ${Object.keys(usage.models).join(" + ")} = ${usage.tokens.total}`);
 
   console.log("\npreview test: all assertions passed");
 } finally {

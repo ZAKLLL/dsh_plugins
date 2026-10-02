@@ -1069,6 +1069,12 @@ function freshReading() {
     stamped: "",
     carry: "",
     tokens: null,
+    /** The model in effect, set by whichever adapter can tell. */
+    model: null,
+    /** Model → usage, so a session that switched models shows both. */
+    models: new Map(),
+    /** Codex reports running totals, so its per-model split needs the previous one. */
+    codexSeen: null,
     asked: new Set(),
     decided: new Set(),
     approvalTools: new Map(),
@@ -1086,20 +1092,23 @@ function readEvent(agent, event, reading) {
   adapterOf(agent)?.readStoreEvent?.(event, reading);
 }
 function summariseReading(reading) {
+  // A Map cannot survive JSON, and an empty one means "this dialect records no
+  // model name" rather than "no models were used".
+  const models = reading.models.size === 0 ? null : Object.fromEntries(reading.models);
+
+  // An approval is a fact, a live tool call is an inference: the fact wins.
   const waiting = [...reading.asked].filter((id) => !reading.decided.has(id));
-  if (waiting.length > 0) {
-    return {
-      tokens: reading.tokens,
-      pending: { kind: "approval", label: reading.approvalTools.get(waiting[0]) ?? null, count: waiting.length },
-    };
-  }
-  if (reading.tools.size > 0) {
-    return {
-      tokens: reading.tokens,
-      pending: { kind: "tool", label: [...reading.tools.values()][0] ?? null, count: reading.tools.size },
-    };
-  }
-  return { tokens: reading.tokens, pending: null };
+  const pending =
+    waiting.length > 0
+      ? { kind: "approval", label: reading.approvalTools.get(waiting[0]) ?? null, count: waiting.length }
+      : reading.tools.size > 0
+        ? { kind: "tool", label: [...reading.tools.values()][0] ?? null, count: reading.tools.size }
+        : null;
+
+  // The current model is reported separately: a dialect can name its model
+  // without recording any usage for it, and that name is still worth showing.
+  const model = typeof reading.model === "string" && reading.model !== "" ? reading.model : null;
+  return { tokens: reading.tokens, model, models, pending };
 }
 
 /** Read whatever this card's store already holds about tokens and waiting work. */
@@ -1357,7 +1366,7 @@ function hubState() {
  * @param ctx - The Host plugin context of the generation that is live.
  */
 /** Every operation this Host answers; also reported when an unknown one arrives. */
-const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many"];
+const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "models", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many"];
 
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
@@ -1541,6 +1550,8 @@ async function dispatch(payload, ctx) {
         startedAt: card.process?.startedAt ?? null,
         elapsedMs: card.process?.startedAt == null ? null : Date.now() - card.process.startedAt,
         tokens: reading?.tokens ?? null,
+        model: reading?.model ?? null,
+        models: reading?.models ?? null,
         pending: reading?.pending ?? null,
       };
     });
@@ -1552,6 +1563,34 @@ async function dispatch(payload, ctx) {
       shown: previews.filter(Boolean).length,
       sessions: previews.filter(Boolean),
       hookPath: hooksPath(),
+    };
+  }
+
+  /**
+   * Which models a session used, and what each one spent.
+   *
+   * Answered from the same store walk that produces the token total, so the two
+   * can never disagree. A session that switched models reports every model it
+   * used, not just the last one — the last one alone would read as though the
+   * whole conversation ran on it.
+   */
+  if (op === "models") {
+    const key = typeof payload?.key === "string" ? payload.key : "";
+    const card = lastCards.find((entry) => entry.key === key);
+    if (card === undefined) return { ok: false, error: "unknown session key" };
+
+    const reading = await readStore(card);
+    if (reading === null) return { ok: false, error: "this session has no readable store" };
+    return {
+      ok: true,
+      key: card.key,
+      sessionId: card.sessionId,
+      agent: card.agent,
+      agentLabel: card.agentLabel,
+      title: card.title,
+      model: reading.model,
+      models: reading.models,
+      tokens: reading.tokens,
     };
   }
 
@@ -1587,8 +1626,13 @@ async function dispatch(payload, ctx) {
     const all = messagesFrom(value.body);
     const truncated = all.length > MAX_PREVIEW_MESSAGES;
     const messages = truncated ? all.slice(all.length - MAX_PREVIEW_MESSAGES) : all;
+    // The same walk that answers tokens, so the reader can name the model it is
+    // showing without a second request.
+    const reading = await readStore(value.card);
     return {
       ok: true,
+      model: reading?.model ?? null,
+      models: reading?.models ?? null,
       key: value.card.key,
       sessionId: value.card.sessionId,
       agent: value.card.agent,

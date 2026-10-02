@@ -229,14 +229,56 @@ export const home = () => homedir();
 
 export const dshHome = () => process.env.DSH_HOME || join(home(), ".dsh");
 
+/** A fresh all-zero usage counter. */
+export function emptyTokens() {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+}
+
+/**
+ * Add one measurement into a counter, in place, and return it.
+ *
+ * `total` uses the dialect's own figure when it states one, and only falls back
+ * to adding the parts when it does not. That is not pedantry: Codex's cached
+ * input is **already inside** its input, so adding the parts there counts every
+ * cached token twice — measured on one rollout, 33,472,212 against an
+ * authoritative 16,773,939. Anthropic's three fields are disjoint, so summing is
+ * right for Claude; pi states a `totalTokens` of its own.
+ */
+function addInto(target, parts) {
+  target.input += num(parts.input);
+  target.output += num(parts.output);
+  target.cacheRead += num(parts.cacheRead);
+  target.cacheWrite += num(parts.cacheWrite);
+  target.total +=
+    parts.total === undefined
+      ? num(parts.input) + num(parts.output) + num(parts.cacheRead) + num(parts.cacheWrite)
+      : num(parts.total);
+  return target;
+}
+
+/**
+ * Attribute an explicit measurement to the model currently in effect.
+ *
+ * Used by a dialect that reports running totals rather than per-turn usage: it
+ * hands over the *difference* between two readings, because attributing a
+ * cumulative total to the current model would bill every earlier model's tokens
+ * to the last one.
+ */
+export function attribute(reading, parts) {
+  const key = reading.model;
+  if (typeof key !== "string" || key === "") return;
+  reading.models.set(key, addInto(reading.models.get(key) ?? emptyTokens(), parts));
+}
+
+/**
+ * Add one turn's usage onto the running total, and onto the model in effect.
+ *
+ * One measurement, two answers: the session total, and the per-model split. That
+ * is why it lives here rather than being repeated in every adapter.
+ */
 export function accumulate(reading, parts) {
-  const current = reading.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  current.input += num(parts.input);
-  current.output += num(parts.output);
-  current.cacheRead += num(parts.cacheRead);
-  current.cacheWrite += num(parts.cacheWrite);
-  current.total = current.input + current.output + current.cacheRead + current.cacheWrite;
-  reading.tokens = current;
+  reading.tokens = addInto(reading.tokens ?? emptyTokens(), parts);
+  attribute(reading, parts);
 }
 
 /** Track one tool call by id, so a call that never finished stays visible. */

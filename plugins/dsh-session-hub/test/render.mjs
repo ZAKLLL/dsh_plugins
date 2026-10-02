@@ -201,7 +201,12 @@ const FAKE_LIVE = {
   pid: 4242,
   startedAt: Date.now() - 5 * 60 * 1000,
   elapsedMs: 5 * 60 * 1000,
-  tokens: { input: 4719, output: 235, cacheRead: 1024, cacheWrite: 0, total: 5978 },
+  model: "selftest-provider/selftest-model",
+  models: {
+    "selftest-provider/selftest-model": { input: 4719, output: 235, cacheRead: 1024, cacheWrite: 0, total: 5978 },
+    "selftest-provider/other-model": { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, total: 1100 },
+  },
+  tokens: { input: 5719, output: 335, cacheRead: 1024, cacheWrite: 0, total: 7078 },
   pending: { kind: "approval", label: "plugin_manager", count: 1 },
 };
 
@@ -565,13 +570,21 @@ for (const button of liveButtons) assert.equal(typeof button.props.title, "strin
 
 // Every fact the detail panel exists for must actually be on it.
 const lineText = hostElements(live.tree, "sh-lp-v").map(textOf);
-const joined = lineText.join(" | ");
+// Labels as well as values: the per-model rows put the model name in the label
+// and its usage in the value, so reading only the values hides the name.
+const joined = [...lineText, ...hostElements(live.tree, "sh-lp-k").map(textOf)].join(" | ");
 assert.ok(joined.includes(FAKE_LIVE.cwd), `the detail must show the directory: ${joined}`);
 assert.ok(/5m/.test(joined), `the detail must show how long it has been up: ${joined}`);
 for (const label of ["tokIn", "tokOut", "tokTotal"]) {
   assert.ok(joined.includes(label), `the detail must break the token total down: ${joined}`);
 }
-assert.ok(joined.includes("6.0k"), `the detail must show the total it spent: ${joined}`);
+assert.ok(joined.includes("7.1k") || joined.includes("7078"), `the detail must show the total it spent: ${joined}`);
+// A session that switched models must name each one and show its own usage.
+assert.ok(joined.includes(FAKE_LIVE.model), `the detail must name the model in effect: ${joined}`);
+assert.ok(
+  joined.includes("selftest-provider/other-model"),
+  `the detail must show every model the session used, not only the last: ${joined}`,
+);
 assert.ok(joined.includes("plugin_manager"), `the detail must name what it waits on: ${joined}`);
 assert.deepEqual(
   lineText.slice(-2),
@@ -641,6 +654,11 @@ assert.ok(chips.length > 0, "tool calls must be lifted out of the prose");
 const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
 assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
 console.log(`reader: ${turns.length} turns, ${chips.length} tool chips lifted out of the prose`);
+// The reader names the model it is showing, beside the agent.
+const readerModel = hostElements(reader.tree, "sh-read-model");
+assert.equal(readerModel.length, 1, "the reader must name the model");
+assert.ok(textOf(readerModel[0]).length > 0, "and the name must not be empty");
+assert.equal(typeof readerModel[0].props.title, "string", "with a tooltip");
 
 // ---- the agent signs itself in the row head -------------------------
 // The short tag replaces a plain-text name that sat among the hover actions and

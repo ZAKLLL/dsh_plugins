@@ -31,46 +31,40 @@ root    :  session_id=019ed32f…  id=019ed32f…
 - [ ] 同一 `id` 的多段（最多 6 段）仍然一个文件一张卡片——需要按 id 合并，且 `fullValueByKey` 要按时间拼接各段
 - [ ] 子代理标题仍在漏注入文本：最大标题簇是 21 条 `"The following is the Codex agent history"`、8 条 `"## Handoff ### Goal / design User chose…"`——`looksInjected` 需要认这些委派前言
 
-## 2. adapter 提供 getModelUsage：按模型分列的用量（**已定接口，未实现**）
+## 2. adapter 提供 getModelUsage（**已完成**）
 
-**决定**：不要只记「最后一个模型」，而是**每个出现过的模型各记一份用量**。adapter 上新增一个读取目标，形状是：
+`reading` 增加 `model`（当前模型）与 `models`（模型 → 用量），由共享的
+`accumulate` 在累加总量时**顺手分桶**——一次遍历两个答案。新增 `models` op，
+`preview` 与 `messages` 也带出。界面：实时详情面板列出每个模型的用量，
+阅读器头部标出当前模型。
 
-```js
-/** 模型 → 该模型在本会话里的用量。键是稳定的模型标识（见下表），值是 Tokens。 */
-models: Map<string, Tokens>   // Tokens 沿用现有形状：input/output/cacheRead/cacheWrite/total
-```
+**五家全部打通**（实测覆盖）：
 
-**为什么放在 reading 而不是新开一个 op**：这三家的读取**本来就在各自的 `readStoreEvent` 里逐事件走 store**（取 token 用量与等待状态那条路径）。在同一个遍历里顺手按当前模型分桶，代价为零；单开一个 op 会把同一份 store 再读一遍。
-
-**各家的数据形状（已实测）**：
-
-| agent | 模型从哪来 | 用量从哪来 | 能否按模型分 |
+| agent | 来源 | 有模型 | 多模型会话 |
 | --- | --- | --- | --- |
-| **claude** | assistant 消息的 `message.model`（实测 `glm-5.3`） | **同一条消息**的 `message.usage` | ✅ 天然可分，逐条累加即可 |
-| **pi** | `model_change` 事件的 `provider` + `modelId`（实测 `blueai-relay-200k/glm-5.3`） | assistant 消息的 `message.usage` | ✅ 记住「当前模型」，用量到达时归到它名下 |
-| **codex** | 事件的 `payload.model`（实测 `gpt-6-luna`；`session_meta` 只有 `model_provider: "custom"`） | `event_msg/token_count` 的 `info.total_token_usage` | ⚠️ **见下** |
-| **dsh** | **未知** | 无 token 事件 | ❌ 待查 |
+| dsh | `request/header` 的 `data.header.config` | 19/20 | 0 |
+| claude | assistant 消息的 `message.model`（与 usage 同一条） | 31/34 | 9 |
+| codex | 事件的 `payload.model` | 269/269 | 20 |
+| gemini | `type:"gemini"` 事件的 `model`（与该轮 tokens 同一条） | 9/10 | 1 |
+| pi | `model_change` 的 provider + modelId | 28/28 | 0 |
 
-**codex 的陷阱（必须处理，否则数字是错的）**：它的 `token_count` 报的是**累计值**，不是每轮的增量。所以「把当前累计归到当前模型」在换过模型的会话里会**把之前模型的用量也算给最后一个模型**。要做对只有两条路：
+**过程中修掉三个自己的错**：
 
-1. 记相邻两次 `token_count` 的**差值**，把差值归给「两次之间使用的模型」；
-2. 或者明确只支持「单一模型的会话」，遇到多个模型就标注不可分。
+1. **`total` 不能自己加**：Codex 的 `cached_input_tokens` **已经包含在**
+   `input_tokens` 里，四项相加会把缓存算两遍——实测 33,472,212 对权威的
+   16,773,939。现在 `total` 优先用方言自己的数字，没有才退回相加。
+   （原先「claude 完全一致」的验证是**循环论证**：拿自己算的和跟自己算的和比。）
+2. **DSH 有两个 `readStoreEvent` 键**（我先加模型、它后面已有审批的那个），
+   同名字面量**后者生效**，模型跟踪静默失效（0/20）。已合并为一个。
+3. **DSH 的 token 用量并非不存在**——`assistant/attempt` 的流里确实有 `usage`
+   chunk，只是本机**全为 0**（provider 不上报），且无法从零值反推它是每轮还是
+   累计，所以不从它取数。先前「DSH 没有 token 事件」的说法不准确。
 
-**建议走 1**，并在 `models` 的键里带上 provider（例如 `custom/gpt-6-luna`），因为仅凭 model 名可能撞车。
+**不变量测试**：`models` 各桶之和必须等于会话总量——**这条正是抓出 Codex
+那个 bug 的检查**，现由 preview 测试以两个模型 + 各自用量的 fixture 钉住；
+另有一条断言 DSH 的模型与审批必须同时生效，防同名键再次互相覆盖。
 
-**UI 注意**：`models` 有多个键时说明会话中途换过模型，展示要能让两者都看见；只有一个键时不要让它看起来像「整条会话只有这一个模型」的结论。
-
-**步骤**：
-
-- [ ] `freshReading()` 增加 `models: new Map()` 与 `model: null`
-- [ ] claude：assistant 有 `message.model` 时按它分桶累加 usage
-- [ ] pi：`model_change` 更新 `reading.model`；assistant usage 归到它名下
-- [ ] codex：`payload.model` 更新 `reading.model`；`token_count` 改用**差值**归桶
-- [ ] dsh：先查 `model/selection` 的 `data` 形状
-- [ ] `Value` / `preview` / `messages` 带出 `models`（Map 需转成普通对象过 JSON）
-- [ ] 测试：断言 claude 的一条会话里若换过模型，会出现**两个键**且各自用量之和等于总量
-
-## 3. 实时视图的详情面板## 3. 实时视图的详情面板
+## 3. 实时视图的详情面板## 3. 实时视图的详情面板## 3. 实时视图的详情面板
 
 已完成：宿主 `reference` op + 行右侧引用按钮（DSH 走原生 mention，其余走 `@` + `adapter.sessionFile(card).path`）。
 

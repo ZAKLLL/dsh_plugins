@@ -109,6 +109,7 @@ window.__ModuleLoader__.load({
       reference: "Reference this session in the draft",
       focusIn: "Jump to the {terminal} window it is already running in",
       openInVscode: "Open this project in VS Code",
+      detailModel: "Model",
       openedEditor: "Opened in {editor}",
       readSession: "Read this conversation",
       loading: "Loading…",
@@ -219,6 +220,7 @@ window.__ModuleLoader__.load({
       reference: "把这条会话引用进草稿",
       focusIn: "跳到它正在运行的 {terminal} 窗口",
       openInVscode: "用 VS Code 打开这个项目",
+      detailModel: "模型",
       openedEditor: "已在 {editor} 中打开",
       readSession: "阅读这条会话",
       loading: "加载中…",
@@ -392,6 +394,7 @@ window.__ModuleLoader__.load({
 .sh-read{max-width:min(720px,92vw);width:100%;max-height:84vh;flex-direction:column;padding:0;display:flex;overflow:hidden}
 .sh-read-head{align-items:center;gap:8px;padding:12px 16px;display:flex;min-width:0;flex:none;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .sh-read-title{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sh-read-model{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34%}
 .sh-read-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;flex-direction:column;gap:14px;padding:14px 16px 18px;display:flex}
 .sh-read-note{color:var(--dsw-alias-label-tertiary);font-size:11px;text-align:center}
 .sh-turn{flex-direction:column;gap:5px;display:flex;min-width:0}
@@ -1869,6 +1872,7 @@ window.__ModuleLoader__.load({
               h("span", { className: "sh-lp-agent" }, data === null ? "" : data.agentLabel),
               h("span", { className: "sh-read-title" }, state.title),
               h("span", { className: "sh-spacer" }),
+              data !== null && data.model !== null && h("span", { className: "sh-read-model", title: t("detailModel") }, data.model),
               data !== null && h("span", { className: "sh-group-count" }, String(data.total)),
               h(
                 "button",
@@ -2326,7 +2330,17 @@ window.__ModuleLoader__.load({
           h("div", { className: "sh-lp-title" }, session.title),
           h(DetailLine, { label: t("detailDir"), value: session.cwd ?? "\u2014", mono: true }),
           h(DetailLine, { label: t("detailUptime"), value: uptimeText }),
+          h(DetailLine, { label: t("detailModel"), value: session.model ?? "\u2014" }),
           h(DetailLine, { label: t("detailTokens"), value: tokensText }),
+          // A session that switched models shows each one's own usage; a single
+          // line would read as though the whole conversation ran on the last.
+          ...Object.entries(session.models ?? {}).map(([name, usage]) =>
+            h(DetailLine, {
+              key: name,
+              label: name,
+              value: `${t("tokIn")} ${formatTokens(usage.input)} \u00b7 ${t("tokOut")} ${formatTokens(usage.output)} \u00b7 ${t("tokTotal")} ${formatTokens(usage.total)}`,
+            }),
+          ),
           h(DetailLine, { label: t("detailWaiting"), value: waitingText }),
           h(
             "div",

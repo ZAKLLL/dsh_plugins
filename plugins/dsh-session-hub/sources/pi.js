@@ -115,6 +115,12 @@ export default defineAdapter({
   prefix: { start: 131072, max: 2097152, complete: (events) => hasPiSignal(events) },
   build: buildPi,
   readStoreEvent(event, reading) {
+    if (event.type === "model_change") {
+      // pi announces a switch; the usage that follows belongs to the new model.
+      const key = [event.provider, event.modelId].filter((part) => typeof part === "string" && part !== "").join("/");
+      if (key !== "") reading.model = key;
+      return;
+    }
     if (event.type === "message" && event.message?.role === "assistant") {
       const usage = event.message.usage;
       if (usage !== null && usage !== undefined) {
@@ -123,6 +129,8 @@ export default defineAdapter({
           output: usage.output,
           cacheRead: usage.cacheRead,
           cacheWrite: usage.cacheWrite,
+          // pi states its own total; trust it over adding the parts.
+          total: usage.totalTokens,
         });
       }
     }

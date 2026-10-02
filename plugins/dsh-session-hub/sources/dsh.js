@@ -116,7 +116,23 @@ export default defineAdapter({
   match: (name) => name.endsWith(".jsonl.zstd"),
   concurrency: 4,
   build: buildDsh,
+  /**
+   * Two things come off a DSH store: the model in effect, and what is waiting.
+   *
+   * The model is named on every request header, so the last one seen wins. Its
+   * `assistant/attempt` stream does carry `usage` chunks, but every one of them
+   * is zero on this machine — the provider reports none — and their semantics
+   * (per attempt or cumulative) cannot be read off zeros. So no tokens are taken
+   * from them: guessing would put a number on screen that nothing measured.
+   */
   readStoreEvent(event, reading) {
+    if (event.type === "request/header") {
+      const config = event.data?.header?.config;
+      const key = [config?.provider, config?.model].filter((part) => typeof part === "string" && part !== "").join("/");
+      if (key !== "") reading.model = key;
+      return;
+    }
+
     // Approval asks and decisions both carry an id, so an ask with no matching
     // decision is a request genuinely still waiting — not a guess about what a
     // tool happens to be doing.

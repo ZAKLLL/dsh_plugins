@@ -162,6 +162,11 @@ export default defineAdapter({
   build: buildClaude,
   readStoreEvent(event, reading) {
     if (event.type === "assistant") {
+      // The model sits on the very message that carries the usage, so the split
+      // is exact rather than inferred from context.
+      if (typeof event.message?.model === "string" && event.message.model !== "") {
+        reading.model = event.message.model;
+      }
       const usage = event.message?.usage;
       if (usage !== null && usage !== undefined) {
         accumulate(reading, {

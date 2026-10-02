@@ -163,6 +163,27 @@ export default defineAdapter({
   concurrency: 8,
   prefix: { start: 131072, max: 2097152, complete: (events) => hasGeminiSignal(events) },
   build: buildGemini,
+  /**
+   * Gemini records the model and that turn's usage on the same `gemini` event.
+   *
+   * The usage is per turn — `input` is the whole context sent on that turn, and
+   * it grows as the conversation does (measured here: 11,947 → 12,638 → 12,924)
+   * — so summing the turns gives the billable total. Its own `total` already
+   * includes the cached and thinking counts, so that figure is carried through
+   * rather than recomputed.
+   */
+  readStoreEvent(event, reading) {
+    if (event.type !== "gemini") return;
+    if (typeof event.model === "string" && event.model !== "") reading.model = event.model;
+    const tokens = event.tokens;
+    if (tokens === null || tokens === undefined) return;
+    accumulate(reading, {
+      input: tokens.input,
+      output: num(tokens.output) + num(tokens.thoughts),
+      cacheRead: tokens.cached,
+      total: tokens.total,
+    });
+  },
   readPreview(events, state) {
     let input = state.input;
     let output = state.output;
