@@ -321,7 +321,7 @@ window.__ModuleLoader__.load({
 .sh-dot-running{animation:sh-pulse 2.2s ease-out infinite}
 @keyframes sh-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 55%,transparent)}70%{box-shadow:0 0 0 5px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .sh-row-title{text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14px;line-height:20px;flex:1;overflow:hidden}
-.sh-row-agent{color:var(--dsw-alias-label-tertiary);white-space:nowrap;flex:none;font-size:10px;line-height:16px}
+.sh-agent-tag{border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-primary-inverted);flex:none;font-size:9px;font-weight:600;line-height:15px;padding:0 4px;letter-spacing:.02em}
 .sh-row-time{color:var(--dsw-alias-label-tertiary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:16px}
 .sh-row-actions{flex:none;align-items:center;gap:2px;display:none}
 .sh-row:hover .sh-row-actions{display:inline-flex}
@@ -658,6 +658,35 @@ window.__ModuleLoader__.load({
         h("path", { d: "M2.9 13.3h10.2" }));
     }
 
+    /** How each agent signs itself in a row's head. */
+    const AGENT_SHORT = {
+      claude: "cc",
+      codex: "codex",
+      gemini: "gemini",
+      pi: "pi",
+      dsh: "dsh",
+      opencode: "opencode",
+    };
+
+    /**
+     * The agent, as a short tag in the row head.
+     *
+     * Its name used to sit as plain text beside the hover actions, where it read
+     * as a stray label among the icons. The tag borrows the agent's own colour —
+     * deliberately only the `sh-agent-dot-<agent>` class, which sets nothing but
+     * `background` and `color`, so the palette stays in one place.
+     */
+    function AgentTag({ card, t }) {
+      return h(
+        "span",
+        {
+          className: `sh-agent-tag sh-agent-dot-${card.agent}`,
+          title: card.agentLabel,
+        },
+        AGENT_SHORT[card.agent] ?? card.agent,
+      );
+    }
+
     /** Angle brackets: the universal "open in an editor". */
     function CodeIcon() {
       return h("svg", {
@@ -887,6 +916,7 @@ window.__ModuleLoader__.load({
             role: "img",
           }),
         ),
+        showAgent && h(AgentTag, { card, t }),
         h(
           "span",
           {
@@ -922,7 +952,6 @@ window.__ModuleLoader__.load({
           ),
         ),
         descendants > 0 && h("span", { className: "sh-sub-count", title: t("subagents", { n: descendants }) }, String(descendants)),
-        showAgent && h("span", { className: "sh-row-agent" }, card.agentLabel),
         h(
           "span",
           {

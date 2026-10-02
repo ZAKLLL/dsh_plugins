@@ -642,6 +642,32 @@ const prose = hostElements(reader.tree, "sh-turn-text").map(textOf).join("\n");
 assert.ok(!/^>\s*tool:/m.test(prose), "no raw tool line may be left in what was said");
 console.log(`reader: ${turns.length} turns, ${chips.length} tool chips lifted out of the prose`);
 
+// ---- the agent signs itself in the row head -------------------------
+// The short tag replaces a plain-text name that sat among the hover actions and
+// read as a stray label there.
+const tags = hostElements(second.tree, "sh-agent-tag");
+assert.ok(tags.length > 0, "rows must carry the agent tag");
+const tagClasses = tags.map((tag) => String(tag.props.className));
+for (const tag of tags) {
+  assert.equal(typeof tag.props.title, "string", "the tag must name the agent in full on hover");
+  assert.ok(tag.props.title.length > 0, "and the name must not be empty");
+  assert.ok(textOf(tag).length > 0, "the tag must show a short code");
+}
+assert.ok(
+  tagClasses.every((cls) => /sh-agent-dot-[a-z]+/.test(cls)),
+  "the tag must take its colour from the agent's own class rather than a second palette",
+);
+assert.ok(
+  tagClasses.every((cls) => !cls.split(/\s+/).includes("sh-agent-dot")),
+  "and only the colour class — the sizing one would make it a dot again",
+);
+assert.equal(
+  hostElements(second.tree, "sh-row-agent").length,
+  0,
+  "the old plain-text label must be gone from the action cluster",
+);
+console.log(`tag: ${tags.length} agent tags in the row head`);
+
 for (const cleanup of cleanups) cleanup();
 globalThis.fetch = realFetch;
 console.log("\nrender test: all assertions passed");
