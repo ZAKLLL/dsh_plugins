@@ -23,15 +23,20 @@ rollout-2026-09-23T21-25-…-01a0d029….jsonl   ← 文件名 uuid 每次都变
 
 `inventory` 正确地识别出它们属于同一会话，却仍然**一个文件产出一张卡片**。`codex resume <id>` 用的正是这个 `session_id`，所以它确实是同一会话。
 
-**待定的关键问题**（决定怎么合并）：这些 rollout 是**累积快照**（最新一个就含完整历史）还是**分段**（各含一部分，必须全部读）？还没验证——从 `msgs` 看 21:25 两文件各 4 条、21:30 两文件各 3 条，像是分段而非累积，但样本不足。
+**已验证（决定了修法）**：这些 rollout 是**分段**，不是累积快照。判据是取同一 thread 的全部文件、按时间排序后看各自的「第一条用户消息」——实测有 **4 种不同**；若是累积，它们应当全都相同（每个文件都从头开始）。
+
+**因此合并分两步，第二步才是难点**：
+
+1. **清单层**（简单）：按 `(agent, sessionId)` 合并卡片——`createdAt` 取最早、`updatedAt` 取最新、`key`/`file` 取最新那个分段作为代表。
+2. **读取层**（难点）：`fullValueByKey` 必须把该会话的**全部分段按时间拼接**，否则点开阅读器只看得到最后一段。这意味着 `key` 不能再等同于单个文件路径——需要一张 `sessionId → 分段文件列表` 的索引，`transcript` / `messages` / `continue` 都走它。
 
 **步骤**：
 
-- [ ] 先验证累积 / 分段
-- [ ] `inventory` 按 `(agent, sessionId)` 合并：`createdAt` 取最早、`updatedAt` 取最新、`key`/`file` 取代表文件
-- [ ] 若为分段：`fullValueByKey` 与 `messages`/`transcript` 都要遍历该会话的全部文件
-- [ ] 若为累积：取最新的即可，`bytes`/`messages` **不求和**（否则重复计数）
-- [ ] 测试：断言 `(agent, sessionId)` 在清单里唯一
+- [x] 验证累积 / 分段 → **分段**
+- [ ] `inventory` 建 `sessionId → 有序分段列表` 索引，并据此合并卡片
+- [ ] `fullValueByKey` 支持「一个 key 对应多个文件」，按时间顺序拼接各段的 `body`
+- [ ] `bytes` / `messages` 此时**可以求和**（各段不重叠）
+- [ ] 测试：断言 `(agent, sessionId)` 在清单里唯一；断言合并后的发言数**等于各段之和**
 
 **注意**：`claude` 也有同样现象（一个 sessionId → 6 个文件），不是 Codex 独有。
 
