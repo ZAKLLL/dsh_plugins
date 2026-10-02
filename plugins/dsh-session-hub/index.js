@@ -1259,15 +1259,30 @@ function resumeCommandFor(card) {
 async function launchInTerminal(cwd, command, title) {
   const cli = resolveCmuxCli();
   if (cli !== null) {
-    try {
-      await execFileAsync(
+    const openWorkspace = () =>
+      execFileAsync(
         cli,
         ["new-workspace", "--cwd", cwd, "--command", command, "--name", oneLine(title, 40), "--focus", "true"],
         { timeout: 15000, maxBuffer: 1024 * 1024 },
       );
+
+    try {
+      await openWorkspace();
       return { kind: "cmux", command, terminal: "cmux" };
     } catch {
-      /* cmux failed — fall through to Terminal.app. */
+      // cmux can only be *told* things while it is running: of its whole command
+      // set only the bare `cmux <path>` form launches the app. So a closed cmux
+      // used to mean every open silently landed in Terminal.app instead. Start
+      // it and try once more before falling back.
+      try {
+        await execFileAsync("open", ["-a", "cmux"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+        // It needs a moment to come up and open its socket.
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await openWorkspace();
+        return { kind: "cmux", command, terminal: "cmux" };
+      } catch {
+        /* Genuinely unavailable — the terminal below is the fallback. */
+      }
     }
   }
 

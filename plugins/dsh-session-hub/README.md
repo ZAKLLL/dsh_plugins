@@ -314,6 +314,22 @@ Codex 的索引是**先写临时文件再 rename** 重写的，写到一半被�
 
 ---
 
+## 用原 agent 打开：cmux 优先
+
+「打开」按这个顺序尝试，任何一步失败才落到下一步：
+
+1. **该 session 自己的桌面应用深链**（目前只有 codex 声明 `codex://threads/<id>`）
+2. **已在 cmux 里运行的会话 → 聚焦它那个 workspace**（`cmux select-workspace`），而不是再 resume 一份
+3. **在 cmux 里新开 workspace 跑 resume 命令**
+4. cmux 没在运行 → **先启动 cmux 再试一次**
+5. 都不行 → Terminal.app
+
+> 第 4 步是补上的。cmux 的整套命令只有**裸的 `cmux <path>` 那种形式**会「launches cmux if needed」，`new-workspace` 需要它**已经在跑**（帮助原文：Create a new workspace in the caller's window）。所以 cmux 关着的时候，每一次「打开」都静默落到了 Terminal.app——看起来就像「没有优先用 cmux」。
+
+**刻意不跑 `codex app`**：那个子命令在桌面端缺失时会拉起安装器，点一下「打开」就下载东西不是好体验。深链要么被处理、要么静默失败。
+
+---
+
 ## 阅读一条会话
 
 点行标题打开只读阅读器。它不是把消息平铺出来，而是**按 turn 分组**：
