@@ -108,6 +108,11 @@ window.__ModuleLoader__.load({
       liveIdle: "No agent is running right now",
       reference: "Reference this session in the draft",
       focusIn: "Jump to the {terminal} window it is already running in",
+      readSession: "Read this conversation",
+      loading: "Loading…",
+      you: "You",
+      noTurns: "This session recorded no turns",
+      truncatedNote: "Showing the newest turns of {n}",
       focused: "Switched to its {terminal} window",
       referenceNone: "This session has no store that can be referenced",
       liveHint: "Select a tile for detail",
@@ -211,6 +216,11 @@ window.__ModuleLoader__.load({
       liveIdle: "目前没有 agent 在运行",
       reference: "把这条会话引用进草稿",
       focusIn: "跳到它正在运行的 {terminal} 窗口",
+      readSession: "阅读这条会话",
+      loading: "加载中…",
+      you: "你",
+      noTurns: "这条会话没有记录任何发言",
+      truncatedNote: "只显示最新的若干轮（共 {n} 轮）",
       focused: "已切换到它的 {terminal} 窗口",
       referenceNone: "这条会话没有可作为引用目标的存储",
       liveHint: "点方块看详情",
@@ -372,6 +382,19 @@ window.__ModuleLoader__.load({
 .sh-tile-proj{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .sh-tile-foot{margin-top:auto;align-items:center;gap:5px;display:flex;min-width:0}
 .sh-tile .sh-icon-btn{width:18px;height:18px}
+.sh-row-title-open{cursor:pointer}
+.sh-row-title-open:hover{text-decoration:underline}
+.sh-row-title-open:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:1px;border-radius:var(--dsw-radius-xs)}
+.sh-read{max-width:min(760px,92vw);width:100%;max-height:84vh;flex-direction:column;display:flex;overflow:hidden}
+.sh-read-head{align-items:center;gap:8px;padding-bottom:8px;display:flex;min-width:0;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.sh-read-title{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sh-read-body{flex:1;min-height:0;overflow-y:auto;flex-direction:column;gap:10px;padding:10px 2px 2px;display:flex}
+.sh-read-note{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.sh-turn{flex-direction:column;gap:3px;display:flex}
+.sh-turn-role{color:var(--dsw-alias-label-tertiary);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+.sh-turn-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:18px}
+.sh-turn-user .sh-turn-text{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-md);padding:6px 9px}
+.sh-turn-assistant .sh-turn-text{color:var(--dsw-alias-label-secondary)}
 .sh-tile-time{color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:14px}
 .sh-tile-badge{color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9px;line-height:13px;padding:0 4px}
 .sh-tile-badge-wait{color:var(--dsw-alias-state-error-primary)}
@@ -417,6 +440,8 @@ window.__ModuleLoader__.load({
     const composer = createStore({ sessionId: null, inputActions: null });
     /** The session awaiting delete confirmation, shared by both entry points. */
     const confirming = createStore(null);
+    /** The session whose turns are being read, shared by both entry points. */
+    const reading = createStore(null);
     /** The project a new session is being started in, shared by both entry points. */
     const spawning = createStore(null);
     /** Bumped after a destructive change so every mounted body reloads. */
@@ -812,7 +837,22 @@ window.__ModuleLoader__.load({
             role: "img",
           }),
         ),
-        h("span", { className: "sh-row-title" }, card.title),
+        h(
+          "span",
+          {
+            className: "sh-row-title sh-row-title-open",
+            role: "button",
+            tabIndex: 0,
+            title: t("readSession"),
+            onClick: () => reading.set({ key: card.key, title: card.title }),
+            onKeyDown: (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              reading.set({ key: card.key, title: card.title });
+            },
+          },
+          card.title,
+        ),
         // The pin cell is its own toggle: visible when pinned, or on hover when
         // not. That keeps a fourth icon out of the hover action row.
         h(
@@ -1647,6 +1687,90 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * The session reader.
+       *
+       * A read-only scroller over one session's turns, in the frame-wide overlay
+       * so the narrow right sidebar does not have to fit it.
+       */
+      function PreviewDialog() {
+        const state = React.useSyncExternalStore(reading.subscribe, reading.get, reading.get);
+        const [data, setData] = React.useState(null);
+        const [error, setError] = React.useState(null);
+
+        const close = React.useCallback(() => reading.set(null), []);
+        useEscape(state !== null, close);
+
+        React.useEffect(() => {
+          if (state === null) return undefined;
+          let cancelled = false;
+          setData(null);
+          setError(null);
+          hub("messages", { key: state.key })
+            .then((result) => {
+              if (!cancelled) setData(result);
+            })
+            .catch((caught) => {
+              if (!cancelled) setError(String(caught?.message ?? caught));
+            });
+          return () => {
+            cancelled = true;
+          };
+        }, [state]);
+
+        if (state === null) return null;
+
+        const turns =
+          data === null
+            ? null
+            : data.messages.map((message, index) =>
+                h(
+                  "div",
+                  { key: index, className: `sh-turn sh-turn-${message.role}` },
+                  h("div", { className: "sh-turn-role" }, message.role === "user" ? t("you") : data.agentLabel),
+                  h("div", { className: "sh-turn-text" }, message.text),
+                ),
+              );
+
+        return h(
+          "div",
+          { className: "sh-backdrop", onClick: close },
+          h(
+            "div",
+            {
+              className: "sh-dialog sh-read",
+              role: "dialog",
+              "aria-modal": "true",
+              "aria-label": t("readSession"),
+              onClick: (event) => event.stopPropagation(),
+            },
+            h(
+              "div",
+              { className: "sh-read-head" },
+              h("span", { className: "sh-lp-agent" }, data === null ? "" : data.agentLabel),
+              h("span", { className: "sh-read-title" }, state.title),
+              h("span", { className: "sh-spacer" }),
+              data !== null && h("span", { className: "sh-group-count" }, String(data.total)),
+              h(
+                "button",
+                { type: "button", className: "sh-btn sh-close", onClick: close, title: t("close"), "aria-label": t("close") },
+                "\u2715",
+              ),
+            ),
+            error !== null
+              ? h("div", { className: "sh-empty" }, error)
+              : turns === null
+                ? h("div", { className: "sh-empty" }, t("loading"))
+                : h(
+                    "div",
+                    { className: "sh-read-body" },
+                    data.truncated && h("div", { className: "sh-read-note" }, t("truncatedNote", { n: data.total })),
+                    turns.length === 0 ? h("div", { className: "sh-empty" }, t("noTurns")) : turns,
+                  ),
+          ),
+        );
+      }
+
+      /**
        * The delete confirmation.
        *
        * It renders in the frame-wide overlay rather than inside the panel, so one
@@ -1895,7 +2019,7 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return { Overlay, SidebarTab, DeleteDialog, SpawnDialog };
+      return { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog };
     }
 
     /**
@@ -2245,7 +2369,7 @@ window.__ModuleLoader__.load({
         }, "dsh-session-hub: workspaces face");
       });
 
-      const { Overlay, SidebarTab, DeleteDialog, SpawnDialog } = makeHub(ctx, t, faces);
+      const { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog } = makeHub(ctx, t, faces);
 
       // Frame-wide entry + overlay.
       ctx.slots.inject("sidebar.footer.action", () =>
@@ -2264,6 +2388,10 @@ window.__ModuleLoader__.load({
 
       ctx.slots.inject("shell.overlay", () =>
         ctx.slots.register({ name: "shell.overlay", id: "session-hub-spawn", order: 22, locale: NS }, SpawnDialog),
+      );
+
+      ctx.slots.inject("shell.overlay", () =>
+        ctx.slots.register({ name: "shell.overlay", id: "session-hub-preview", order: 23, locale: NS }, PreviewDialog),
       );
 
       // The dock bridge that hands the overlay the live composer's actions.

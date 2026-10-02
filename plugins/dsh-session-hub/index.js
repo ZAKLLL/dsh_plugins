@@ -766,6 +766,40 @@ async function materialize(value, destDir, currentSessionId) {
  * Deleting a session
  * ------------------------------------------------------------------ */
 
+/** How many turns one preview may carry; the oldest are dropped beyond it. */
+const MAX_PREVIEW_MESSAGES = 600;
+
+/**
+ * Split a normalized transcript body back into its turns.
+ *
+ * The body is the one thing every adapter produces, and they all mark a turn
+ * with exactly `## User` or `## Assistant` on its own line — so this needs no
+ * per-agent code. Only those exact words count: people write markdown in their
+ * prompts, and a heading like `## 场景路由` is part of a message, not a boundary.
+ */
+function messagesFrom(body) {
+  const messages = [];
+  let role = null;
+  let lines = [];
+  const flush = () => {
+    if (role === null) return;
+    const text = lines.join("\n").trim();
+    if (text !== "") messages.push({ role, text });
+    lines = [];
+  };
+  for (const line of String(body ?? "").split("\n")) {
+    const heading = /^## (User|Assistant)$/.exec(line.trim());
+    if (heading !== null) {
+      flush();
+      role = heading[1] === "User" ? "user" : "assistant";
+      continue;
+    }
+    if (role !== null) lines.push(line);
+  }
+  flush();
+  return messages;
+}
+
 /**
  * Turn a path into DSH's own `@` file reference.
  *
@@ -1296,7 +1330,7 @@ function hubState() {
  * @param ctx - The Host plugin context of the generation that is live.
  */
 /** Every operation this Host answers; also reported when an unknown one arrives. */
-const OPS = ["list", "status", "preview", "pin", "transcript", "continue", "reference", "open", "spawn", "delete", "delete-many"];
+const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "continue", "reference", "open", "spawn", "delete", "delete-many"];
 
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
@@ -1491,6 +1525,34 @@ async function dispatch(payload, ctx) {
       shown: previews.filter(Boolean).length,
       sessions: previews.filter(Boolean),
       hookPath: hooksPath(),
+    };
+  }
+
+  /**
+   * One session's turns, for the reader.
+   *
+   * This is the same normalized body the transcript renders, split back apart —
+   * a reader wants the turns, not a markdown document.
+   */
+  if (op === "messages") {
+    const value = await fullValueByKey(payload?.key);
+    if (value === null || value === undefined) return { ok: false, error: "unknown session key" };
+
+    const all = messagesFrom(value.body);
+    const truncated = all.length > MAX_PREVIEW_MESSAGES;
+    const messages = truncated ? all.slice(all.length - MAX_PREVIEW_MESSAGES) : all;
+    return {
+      ok: true,
+      key: value.card.key,
+      sessionId: value.card.sessionId,
+      agent: value.card.agent,
+      agentLabel: value.card.agentLabel,
+      title: value.card.title,
+      cwd: value.card.cwd,
+      updatedAt: value.card.updatedAt,
+      total: all.length,
+      truncated,
+      messages,
     };
   }
 

@@ -150,6 +150,24 @@ for (const agent of agents) {
   assert.ok(markdown.includes(`- **agent**: ${card.agentLabel}`), "transcript must name its agent");
   assert.ok(markdown.includes(`- **raw store**: \`${card.file}\``), "transcript must cite its raw store");
 
+  // The reader splits that same body back into turns, and it must split on
+  // exactly the headings the adapters emit — people write markdown in their
+  // prompts, so a `## 场景路由` heading is part of a message, not a boundary.
+  const turns = await call({ op: "messages", key: card.key });
+  assert.equal(turns.body.ok, true, `messages failed for ${agent}`);
+  const usersAsTurns = turns.body.messages.filter((message) => message.role === "user").length;
+  assert.equal(
+    usersAsTurns,
+    (markdown.match(/^## User$/gm) ?? []).length,
+    `${agent}: every "## User" heading must become exactly one turn`,
+  );
+  assert.equal(
+    turns.body.messages.filter((message) => message.role === "assistant").length,
+    (markdown.match(/^## Assistant$/gm) ?? []).length,
+    `${agent}: every "## Assistant" heading must become exactly one turn`,
+  );
+  assert.ok(turns.body.total >= usersAsTurns, "the total must count every turn");
+
   const users = (markdown.match(/^## User$/gm) ?? []).length;
   const assistants = (markdown.match(/^## Assistant$/gm) ?? []).length;
   assert.ok(users + assistants > 0, `transcript for ${agent} rendered no messages`);

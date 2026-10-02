@@ -231,6 +231,10 @@ const source = await readFile(new URL("../client.js", import.meta.url), "utf8");
 let factory = null;
 const loadedIds = [];
 const window = {
+  // `useEscape` listens on the window; without this a dialog that renders fine
+  // in a browser throws in the sandbox.
+  addEventListener: () => {},
+  removeEventListener: () => {},
   __ModuleLoader__: {
     load: ({ id, factory: register }) => {
       loadedIds.push(id);
@@ -301,6 +305,7 @@ const expected = [
   "shell.overlay#session-hub-panel",
   "shell.overlay#session-hub-confirm",
   "shell.overlay#session-hub-spawn",
+  "shell.overlay#session-hub-preview",
   "conversation.composer.dock#session-hub-bridge",
   "sidebar.right.pane.tab#dsh-session-hub",
   "sidebar.right.pane.tab.title#dsh-session-hub",
@@ -318,17 +323,20 @@ const TabTitle = registered.get("sidebar.right.pane.tab.title#dsh-session-hub");
 const Overlay = registered.get("shell.overlay#session-hub-panel");
 const Confirm = registered.get("shell.overlay#session-hub-confirm");
 const Spawn = registered.get("shell.overlay#session-hub-spawn");
+const Preview = registered.get("shell.overlay#session-hub-preview");
 const Bridge = registered.get("conversation.composer.dock#session-hub-bridge");
 assert.equal(typeof SidebarTab, "function");
 assert.equal(typeof TabTitle, "function");
 assert.equal(typeof Overlay, "function");
 assert.equal(typeof Confirm, "function");
 assert.equal(typeof Spawn, "function");
+assert.equal(typeof Preview, "function");
 assert.equal(typeof Bridge, "function");
 
 // The bridge and the confirm dialog are legitimately null-rendering here.
 assert.equal(render(Confirm, {}).tree, null, "no pending delete means no dialog");
 assert.equal(render(Spawn, {}).tree, null, "no pending project means no spawn dialog");
+assert.equal(render(Preview, {}).tree, null, "no selected session means no reader");
 assert.equal(render(Bridge, { sessionId: "s", inputActions: null }).tree, null, "the bridge renders nothing");
 // `Overlay` is gated on its store, which starts closed.
 assert.equal(render(Overlay, {}).tree, null, "the overlay is closed by default");
@@ -578,6 +586,38 @@ assert.ok(
   "the directory must be rendered as a path, not prose",
 );
 console.log(`live: 1 tile, 1 detail panel, ${liveButtons.length} actions, drag enabled, source stated`);
+
+// ---- the reader -----------------------------------------------------
+// A row title is the way in. The harness cannot dispatch a click, but it can
+// call the handler the real element carries.
+const titleNode = flatten(second.tree).find(
+  (node) => typeof node.props?.className === "string" && node.props.className.split(/\s+/).includes("sh-row-title-open"),
+);
+assert.ok(titleNode, "a row title must open the reader");
+assert.equal(typeof titleNode.props.onClick, "function");
+assert.equal(typeof titleNode.props.title, "string", "and say so on hover");
+titleNode.props.onClick();
+
+let reader = render(Preview, {});
+for (const effect of reader.effects) {
+  const cleanup = effect();
+  if (typeof cleanup === "function") cleanups.push(cleanup);
+}
+for (let attempt = 0; attempt < 40; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  reader = render(Preview, {});
+  if (hostElements(reader.tree, "sh-turn").length > 0) break;
+}
+
+const turns = hostElements(reader.tree, "sh-turn");
+assert.ok(turns.length > 0, "the reader must render the session's turns");
+assert.equal(hostElements(reader.tree, "sh-read-body").length, 1, "and scroll inside its own body");
+assert.ok(hostElements(reader.tree, "sh-turn-user").length > 0, "user turns must be marked as such");
+assert.ok(hostElements(reader.tree, "sh-turn-assistant").length > 0, "and so must the agent's");
+for (const role of hostElements(reader.tree, "sh-turn-role").map(textOf)) {
+  assert.ok(role.length > 0, "every turn must name its speaker");
+}
+console.log(`reader: ${turns.length} turns, ${hostElements(reader.tree, "sh-turn-user").length} from the user`);
 
 for (const cleanup of cleanups) cleanup();
 globalThis.fetch = realFetch;
