@@ -337,6 +337,7 @@ window.__ModuleLoader__.load({
 .sh-dot-running{animation:sh-pulse 2.2s ease-out infinite}
 @keyframes sh-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 55%,transparent)}70%{box-shadow:0 0 0 5px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .sh-row-title{text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14px;line-height:20px;flex:1;overflow:hidden}
+.sh-row-model{color:var(--dsw-alias-label-secondary);flex:none;font-size:10px;max-width:112px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sh-agent-tag{border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-primary-inverted);flex:none;font-size:9px;font-weight:600;line-height:15px;padding:0 4px;letter-spacing:.02em}
 .sh-row-time{color:var(--dsw-alias-label-tertiary);flex:none;font-variant-numeric:tabular-nums;font-size:10px;line-height:16px}
 .sh-row-actions{flex:none;align-items:center;gap:2px;display:none}
@@ -1174,6 +1175,12 @@ window.__ModuleLoader__.load({
           },
           card.title,
         ),
+        // Which model answered last. It sits with the row's other read-only
+        // facts rather than in the action cluster, so it never competes with the
+        // buttons for the eye.
+        typeof card.model === "string" &&
+          card.model !== "" &&
+          h("span", { className: "sh-row-model", title: card.model }, card.model),
         // The pin cell is its own toggle: visible when pinned, or on hover when
         // not. That keeps a fourth icon out of the hover action row.
         h(

@@ -406,8 +406,11 @@ for (const effect of first.effects) {
 // The first `list` of a process walks every session store, so give it room and
 // re-render until the data lands rather than guessing at one delay.
 let second = null;
-for (let attempt = 0; attempt < 60; attempt += 1) {
-  await new Promise((resolve) => setTimeout(resolve, 150));
+for (let attempt = 0; attempt < 10; attempt += 1) {
+  // A scan reads every session's store, so leave room for a whole one: rendering
+  // in a tight loop just issues another scan before the last has answered, and
+  // then nothing ever settles.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
   second = render(SidebarTab, { sessionId: "selftest", inputActions: null });
   for (const effect of second.effects) {
     const cleanup = effect();
@@ -768,6 +771,18 @@ const readerModel = hostElements(reader.tree, "sh-read-model");
 assert.equal(readerModel.length, 1, "the reader must name the model");
 assert.ok(textOf(readerModel[0]).length > 0, "and the name must not be empty");
 assert.equal(typeof readerModel[0].props.title, "string", "with a tooltip");
+
+// ---- which model answered last ---------------------------------------
+// Read from the end of each store during the scan, so it is on the row itself
+// rather than only in the live detail panel.
+const models = hostElements(second.tree, "sh-row-model");
+assert.ok(models.length > 0, "a row must name the model that answered last");
+for (const chip of models) {
+  const name = textOf(chip);
+  assert.ok(name.length > 0, "the model name must not be empty");
+  assert.equal(chip.props.title, name, "and must be readable in full on hover, since the row truncates it");
+}
+console.log(`model: ${models.length} rows name their model`);
 
 // ---- the agent signs itself in the row head -------------------------
 // The short tag replaces a plain-text name that sat among the hover actions and

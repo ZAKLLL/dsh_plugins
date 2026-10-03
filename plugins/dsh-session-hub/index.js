@@ -654,6 +654,125 @@ function isScratchWorkspace(cwd) {
   return UUID_DIRECTORY.test(cwd.replace(/\/+$/, "").split("/").pop());
 }
 
+/**
+ * The last part of a session's store, as text.
+ *
+ * The cut lands on a real boundary, not a byte count: JSONL is trimmed back to
+ * the first whole line, and a DSH store is concatenated zstd frames whose
+ * decoder finds them by magic, so a cut inside one simply yields nothing from it.
+ */
+async function readStoreTail(card, bytes) {
+  // The same tail reader the live preview uses — one place that knows how to
+  // take the end off a file.
+  const { buffer, fromStart } = await readTail(card.file, bytes);
+  if (adapterOf(card.agent)?.storeKind === "frames") {
+    return decodeZstdFrames(buffer).toString("utf8");
+  }
+  const text = buffer.toString("utf8");
+  if (fromStart) return text;
+  const firstBreak = text.indexOf("\n");
+  return firstBreak < 0 ? "" : text.slice(firstBreak + 1);
+}
+
+/**
+ * The first part of a store, for a marker that only ever appears early.
+ *
+ * A dialect can name its model once, near the start: pi records a
+ * `model_change`, and a Codex session that ends with a large tool output pushes
+ * its `turn_context` far from the end. The tail is still tried first, because
+ * only the tail says which model is *current*.
+ */
+async function readStoreHead(card, bytes) {
+  const handle = await open(card.file, "r");
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    const slice = buffer.subarray(0, Math.max(0, bytesRead));
+    if (adapterOf(card.agent)?.storeKind === "frames") return decodeZstdFrames(slice).toString("utf8");
+    const text = slice.toString("utf8");
+    const lastBreak = text.lastIndexOf("\n");
+    return lastBreak < 0 ? text : text.slice(0, lastBreak);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** file -> { stamp, model }, so a scan only pays for files that changed. */
+const modelTailCache = new Map();
+
+/**
+ * The model a session last used, taken from the end of its store.
+ *
+ * Naming the model on every row means touching every store, so this reads only
+ * the tail: the answer sits at the end, and walking whole stores would mean
+ * reading hundreds of megabytes on every scan (one Codex session here is 16MB).
+ * Cached by size and mtime, so a refresh is free until a session changes.
+ *
+ * The tail is widened once on a miss, because a store can end with a large tool
+ * output that pushes the model marker out of the first window.
+ *
+ * Only `reading.model` is taken. The token figures a tail read produces would be
+ * meaningless without the history before them — Codex derives its per-model
+ * split from differences between running totals — so they are discarded rather
+ * than shown as if they were the session's usage.
+ */
+async function modelFromTail(card) {
+  const adapter = adapterOf(card.agent);
+  if (adapter?.readStoreEvent === undefined || typeof card.file !== "string") return null;
+
+  let stats;
+  try {
+    stats = await stat(card.file);
+  } catch {
+    return null;
+  }
+  const stamp = `${stats.size}:${Math.round(stats.mtimeMs)}`;
+  const cached = modelTailCache.get(card.file);
+  if (cached !== undefined && cached.stamp === stamp) return cached.model;
+
+  const windows = adapter.storeKind === "frames" ? [262144, 2097152] : [32768, 262144];
+  // Tail first — it is the one that says which model is current — then the head,
+  // for a dialect that named the model once and never again.
+  const readers = [
+    ...windows.map((bytes) => () => readStoreTail(card, bytes)),
+    // 128KB is enough: a `model_change` or a first `turn_context` is in the
+    // opening turns, and reading more for the rare miss costs every row.
+    () => readStoreHead(card, 131072),
+  ];
+  for (const read of readers) {
+    let text;
+    try {
+      text = await read(card, 0);
+    } catch {
+      continue;
+    }
+    const reading = freshReading();
+    for (const line of text.split("\n")) {
+      if (line.trim() === "") continue;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      // One event shape this adapter does not expect must not cost the whole row
+      // its model.
+      try {
+        adapter.readStoreEvent(event, reading);
+      } catch {
+        continue;
+      }
+    }
+    if (typeof reading.model === "string" && reading.model !== "") {
+      modelTailCache.set(card.file, { stamp, model: reading.model });
+      return reading.model;
+    }
+  }
+
+  modelTailCache.set(card.file, { stamp, model: null });
+  return null;
+}
+
 async function inventory(force, ctx) {
   const cards = [];
   const sources = [];
@@ -683,6 +802,13 @@ async function inventory(force, ctx) {
     }
     sources.push({ id: source.id, label: source.label, root, total: values.length, parsed, skipped });
   }
+
+  // The model lives at the end of a store, which `build` never sees — it reads
+  // the head for the title and cwd. So it is filled in here, once, in parallel.
+  await mapLimit(cards, 8, async (card) => {
+    card.model = await modelFromTail(card);
+    return null;
+  });
 
   cards.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   linkFamilies(cards);
