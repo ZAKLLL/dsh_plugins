@@ -86,20 +86,31 @@ root    :  session_id=019ed32f…  id=019ed32f…
 
 ---
 
-## 4b. 测试会被「活动环境是远端」影响（**现象已记，成因未完全查清**）
+## 4b. 测试里的 hook spool：读写两边曾经指着不同路径（**已修**）
 
-跑全量时 `delete` / `pins` / `preview` / `reload` 四个套件同时报了
-`list failed: Connection timed out during banner exchange`——**它们去 SSH 了**。重跑就恢复，所以是**偶发**，不是必现。
+跑全量时 `delete` / `pins` / `preview` / `reload` 四个套件同时报
+`list failed: Connection timed out during banner exchange`——它们去 SSH 了。
 
-值得注意的是这些套件**都已经**用 `DSH_SESSION_HUB_HOME` 把插件自己的文件（pins / hook spool / **所选环境**）搬到临时目录了，理论上不该碰远端。两处可疑，都还没验证：
+**我当时的判断是错的。** 我先写成「偶发」（重跑就恢复），又写过一个 `test/env.mjs`
+助手去改真实的 `environment.json`——**两者都不对**：问题不在环境状态，而在
+**`hook.mjs` 与宿主对「spool 在哪」的算法不一致**。
 
-- `delete.mjs` 在 `await import("../index.js")` **之前**设置 `DSH_SESSION_HUB_HOME`，而 `preview.mjs` 是**之后**（第 34 行导入、第 100 行才设置）。如果环境状态在加载/激活时被读一次并缓存，后者的顺序就会让它读**真实**的状态文件——而你当前的活动环境正是 `pro14uu`。
-- 或者只是那台机器当时**时通时不通**（banner 超时本身是网络现象）。
+`sessionHubHome()` 是**可重定位**的（`DSH_SESSION_HUB_HOME`，为测试准备的），宿主读
+spool 时走它；而 `hook.mjs` 当时**只认 `DSH_HOME`**——于是把插件状态搬进临时目录后，
+**读的一边搬了、写的一边没搬**，写进去的 hook 落在没人读的文件里。preview 套件因此
+拿不到本轮的 hook 报告，只有上一次运行留下的陈旧报告。
 
-- [ ] 先把各套件的 `DSH_SESSION_HUB_HOME` 统一挪到 **import 之前**，看是否还偶发
-- [ ] 顺带查：环境状态是否在激活时被缓存（若是，应改成每次请求重算，与 `hostCandidates` 一致）
+两处已修（都在 `094be52` 里，当时被 `git add -A` 与文档改动一起提交了）：
 
-> 中途我曾写过一个 `test/env.mjs` 助手，在 import 时把**真实的** `environment.json` 的 `active` 改成 `local`、退出时还原。**已删除**：它去动使用者真实的文件，而且实测禁用之后四个套件照样全绿——它并没有解决这个问题。
+- `hook.mjs` 改成和宿主同一套解析（`DSH_SESSION_HUB_HOME` 优先，`DSH_SESSION_HUB_HOOKS` 仍可指名文件）
+- `shared.js` 的 `sessionHubHome()` 把这个目录抽成一个概念
+
+**教训**：同一份「文件在哪」的算法出现在两个进程里时，必须只有一个来源；测试里的
+重定位只要有一边没跟上，症状会表现为**与本轮无关的陈旧数据**，而不是报错。
+`test/env.mjs` 那个助手已删除（它去动使用者真实的文件，而且实测禁用后四个套件照样全绿）。
+
+- [ ] 顺带确认：环境状态是否在**激活时**被读一次并缓存——若是，测试必须在 import 之前
+      设好 `DSH_SESSION_HUB_HOME`（`preview.mjs` 目前是 import 之后才设）
 
 ## 5. `dsh-session-hub` 的 remote 模式（**代码与自动化验收已完成**，桌面端待重启生效）
 
