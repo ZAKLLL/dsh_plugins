@@ -21,6 +21,10 @@
  */
 
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { parseSshConfig } from "../environments.js";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
@@ -247,6 +251,16 @@ const FAKE_MESSAGES = {
   ],
 };
 
+/**
+ * When set, the client is told the panel is pointed at another machine.
+ *
+ * Only the `environment` answer is faked: every other operation still reaches
+ * the real Host route, so the data path stays real. This is what makes the
+ * client's remote-only branches — which are exactly the ones that must not fall
+ * back to opening something local — reachable in a test at all.
+ */
+let answerAsRemote = false;
+
 const stubFetch = async (url, init) => {
   if (String(url).includes("/api/session-hub")) {
     const payload = (() => {
@@ -256,6 +270,20 @@ const stubFetch = async (url, init) => {
         return {};
       }
     })();
+    if (payload.op === "environment" && answerAsRemote) {
+      return Response.json({
+        ok: true,
+        active: { id: "fake", kind: "remote", label: "Fake", alias: "fake", reachable: true, error: null },
+        environments: [
+          { id: "local", kind: "local", label: "本机", alias: null },
+          { id: "fake", kind: "remote", label: "Fake", alias: "fake" },
+        ],
+        problems: [],
+      });
+    }
+    if (payload.op === "open" && answerOpenAsCommand !== null && payload.launch !== true) {
+      return Response.json({ ok: true, kind: "terminal-command", command: answerOpenAsCommand, cwd: "/tmp", sessionId: "s" });
+    }
     if (payload.op === "preview") {
       return Response.json({ ok: true, runningCount: 1, sessions: [FAKE_LIVE] });
     }
@@ -322,6 +350,37 @@ const slots = {
   },
 };
 
+/**
+ * This window's built-in terminal, as the client reaches it.
+ *
+ * Stateful on purpose: the client tells the new tab apart by snapshotting the
+ * open tabs *before* asking for one, so a stub that always showed the tab would
+ * make every run look like "the terminal tab did not appear".
+ */
+const terminalCalls = { opened: [], written: [] };
+let openTerminalTabs = [];
+const terminalFaces = {
+  sidebarRight: {
+    commandTarget: () => ({ sessionId: "selftest" }),
+    openTabs: { getSnapshot: () => openTerminalTabs },
+    openTabFromTarget: (kind, target) => {
+      terminalCalls.opened.push({ kind, sessionId: target?.sessionId });
+      openTerminalTabs = [{ id: "tab-1", kind: "terminal", sessionId: "selftest", contentId: "content-1" }];
+    },
+    tabDomain: { occurrence: () => ({ navigation: { getSnapshot: () => ({ params: {}, address: "content-1" }) } }) },
+  },
+  webTerminals: {
+    view: () => ({
+      attachmentId: "attachment-1",
+      state: { getSnapshot: () => ({ writable: true }) },
+      write: (text) => terminalCalls.written.push(text),
+    }),
+  },
+};
+
+/** When set, `open` answers with a command for the terminal instead of acting. */
+let answerOpenAsCommand = null;
+
 function makeContext() {
   const ctx = {
     slots,
@@ -336,6 +395,8 @@ function makeContext() {
       for (const name of names) {
         if (name === "sidebarRightTabs") scope.sidebarRightTabs = { register: () => () => {} };
         if (name === "uiWorkspace") scope.uiWorkspace = undefined;
+        if (name === "sidebarRight") scope.sidebarRight = terminalFaces.sidebarRight;
+        if (name === "webTerminals") scope.webTerminals = terminalFaces.webTerminals;
       }
       fn(scope);
     },
@@ -353,6 +414,8 @@ const expected = [
   "shell.overlay#session-hub-confirm",
   "shell.overlay#session-hub-spawn",
   "shell.overlay#session-hub-preview",
+  "shell.overlay#session-hub-config",
+  "shell.overlay#session-hub-hosts",
   "conversation.composer.dock#session-hub-bridge",
   "sidebar.right.pane.tab#dsh-session-hub",
   "sidebar.right.pane.tab.title#dsh-session-hub",
@@ -371,6 +434,8 @@ const Overlay = registered.get("shell.overlay#session-hub-panel");
 const Confirm = registered.get("shell.overlay#session-hub-confirm");
 const Spawn = registered.get("shell.overlay#session-hub-spawn");
 const Preview = registered.get("shell.overlay#session-hub-preview");
+const Config = registered.get("shell.overlay#session-hub-config");
+const Hosts = registered.get("shell.overlay#session-hub-hosts");
 const Bridge = registered.get("conversation.composer.dock#session-hub-bridge");
 assert.equal(typeof SidebarTab, "function");
 assert.equal(typeof TabTitle, "function");
@@ -378,12 +443,16 @@ assert.equal(typeof Overlay, "function");
 assert.equal(typeof Confirm, "function");
 assert.equal(typeof Spawn, "function");
 assert.equal(typeof Preview, "function");
+assert.equal(typeof Config, "function");
+assert.equal(typeof Hosts, "function");
 assert.equal(typeof Bridge, "function");
 
 // The bridge and the confirm dialog are legitimately null-rendering here.
 assert.equal(render(Confirm, {}).tree, null, "no pending delete means no dialog");
 assert.equal(render(Spawn, {}).tree, null, "no pending project means no spawn dialog");
 assert.equal(render(Preview, {}).tree, null, "no selected session means no reader");
+assert.equal(render(Config, {}).tree, null, "the config editor is closed by default");
+assert.equal(render(Hosts, {}).tree, null, "the machine manager is closed by default");
 assert.equal(render(Bridge, { sessionId: "s", inputActions: null }).tree, null, "the bridge renders nothing");
 // `Overlay` is gated on its store, which starts closed.
 assert.equal(render(Overlay, {}).tree, null, "the overlay is closed by default");
@@ -812,6 +881,289 @@ assert.equal(
   "the old plain-text label must be gone from the action cluster",
 );
 console.log(`tag: ${tags.length} agent tags in the row head`);
+
+// ---- the config editor ----------------------------------------------
+// A click cannot be dispatched, but the node carries its handler, and the
+// component reads its open state from a store — so calling the handler is
+// exactly what the seat does. This is the only route to a state that a click
+// normally reaches, and it must not throw: a TDZ or a bad hook order here is
+// what leaves the slot occupant `active: false` in the real app.
+const configChips = flatten(second.tree).filter(
+  (node) => node.type === "button" && textOf(node) === "configMode",
+);
+assert.ok(configChips.length >= 1, "the panel must offer a way into the config editor");
+configChips[0].props.onClick();
+
+const dialog = render(Config, {});
+assert.ok(dialog.tree !== null, "an opened config editor must render");
+assert.equal(hostElements(dialog.tree, "sh-card-config").length, 1, "it must render in its own wider frame");
+for (const effect of dialog.effects) {
+  const cleanup = effect();
+  if (typeof cleanup === "function") cleanups.push(cleanup);
+}
+
+// The list is fetched from the real Host, so give it the same room the scan gets.
+let filled = dialog;
+for (let attempt = 0; attempt < 6; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  filled = render(Config, {});
+  for (const effect of filled.effects) {
+    const cleanup = effect();
+    if (typeof cleanup === "function") cleanups.push(cleanup);
+  }
+  if (hostElements(filled.tree, "sh-config-file").length > 0) break;
+}
+const configFiles = hostElements(filled.tree, "sh-config-file");
+assert.ok(configFiles.length > 0, "the config editor must list the declared files");
+const configGroups = hostElements(filled.tree, "sh-config-agent-name");
+assert.ok(configGroups.length >= 4, `every agent that declares config must be grouped: ${configGroups.length}`);
+
+// Opening a file is the other half. The first file in the catalogue is DSH's
+// credential store, which is deliberately masked until it is revealed — so this
+// asserts the mask first, then the reveal, then an ordinary file.
+const credentials = configFiles.find((node) => textOf(node).startsWith(".credentials.yaml"));
+assert.ok(credentials !== undefined, "the credential store must be listed");
+
+/**
+ * Click, wait for the request the click starts, then render.
+ *
+ * Effects are deliberately *not* run here. This harness has no dependency
+ * comparison and no `useCallback` memoisation, so the panel's one-shot load
+ * effect would re-run on every pass and clear the selection the click just
+ * made. Real React does not re-run it — the dependencies are `[load, envId]` and
+ * neither changed — so rendering without effects is the faithful comparison.
+ */
+const afterClick = async (node, delay = 600) => {
+  node.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  return render(Config, {});
+};
+
+const masked = await afterClick(credentials);
+assert.equal(hostElements(masked.tree, "sh-config-editor").length, 0, "a credential file must not be shown just because it was opened");
+const reveal = flatten(masked.tree).find((node) => node.type === "button" && textOf(node) === "configReveal");
+assert.ok(reveal !== undefined, "a masked file must offer a way to reveal it");
+
+const editor = await afterClick(reveal, 150);
+const revealed = hostElements(editor.tree, "sh-config-editor");
+assert.equal(revealed.length, 1, "revealing must open exactly one editor");
+assert.ok(revealed[0].props.value.length > 0, "the revealed editor must hold the file's body");
+assert.equal(typeof revealed[0].props.onChange, "function", "and must be editable");
+assert.ok(hostElements(editor.tree, "sh-config-file").length === 0, "the list must give way to the editor");
+
+// And an ordinary file opens directly, with no reveal step.
+const back = flatten(editor.tree).find((node) => node.type === "button" && textOf(node).startsWith("‹ "));
+assert.ok(back !== undefined, "the editor must offer a way back to the list");
+const listed = await afterClick(back, 150);
+const settings = hostElements(listed.tree, "sh-config-file").find((node) => textOf(node).startsWith("settings.json"));
+assert.ok(settings !== undefined, "an ordinary file must be listed");
+const ordinaryEditor = await afterClick(settings);
+const ordinary = hostElements(ordinaryEditor.tree, "sh-config-editor");
+assert.equal(ordinary.length, 1, "an ordinary file must open directly");
+assert.ok(ordinary[0].props.value.includes("{"), "a JSON config must be readable as text");
+console.log(`config: ${configGroups.length} agent groups, ${configFiles.length} files, ${ordinary[0].props.value.length} chars in settings.json`);
+
+/* ------------------------------------------------------------------ *
+ * A remote DSH session must not be opened as a local one
+ * ------------------------------------------------------------------ */
+
+/**
+ * The client's DSH shortcut hands a session to *this* machine's workspace
+ * registry. On a remote environment that is the worst possible answer: it opens
+ * a local session with a remote id, which looks like it worked.
+ *
+ * The two branches are told apart by which toast they produce. This harness has
+ * no `uiWorkspace` at all, so the local shortcut reports `failed`; going to the
+ * Host instead reports `openNone`. Neither is a real outcome — the point is
+ * *which* one happens.
+ */
+const dshOpenButton = (tree) =>
+  flatten(tree).find(
+    (node) => node.type === "button" && node.props?.title === "openInDsh",
+  );
+
+/**
+ * A rendered DSH row to click.
+ *
+ * Three things have to be true, and all three are things a person does rather
+ * than special cases for the test: the tab has to be in list mode (the live-view
+ * section left it on the live view), the list has to be filtered to dsh (the
+ * first page happens to be claude and codex), and each group has to be opened
+ * (the list collapses all but one).
+ *
+ * Everything comes from a **fresh** render, and the inventory is refetched: the
+ * live-view section clears the hook cells on purpose so its seed takes effect,
+ * which wipes the panel's loaded sessions too — and a handler captured from a
+ * tree built before that writes to an orphaned cell, so nothing would happen.
+ */
+async function findDshRow() {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 500));
+  const runEffects = (tree) => {
+    for (const effect of tree.effects) {
+      const cleanup = effect();
+      if (typeof cleanup === "function") cleanups.push(cleanup);
+    }
+  };
+
+  let tree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+  const listMode = flatten(tree.tree).find((node) => node.type === "button" && textOf(node) === "modeList");
+  if (listMode !== undefined) listMode.props.onClick();
+  tree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+  runEffects(tree);
+
+  for (let attempt = 0; attempt < 10 && hostElements(tree.tree, "sh-group-head").length === 0; attempt += 1) {
+    await tick();
+    tree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+    runEffects(tree);
+  }
+  assert.ok(hostElements(tree.tree, "sh-group-head").length > 0, "the list must load again after the cells were cleared");
+
+  const chip = flatten(tree.tree).find((node) => node.type === "button" && textOf(node).startsWith("DSH"));
+  assert.ok(chip !== undefined, "the agent filter must offer dsh");
+  chip.props.onClick();
+  tree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const collapsed = hostElements(tree.tree, "sh-group-head").filter((node) => node.props?.["aria-expanded"] === false);
+    if (collapsed.length === 0) break;
+    for (const head of collapsed) head.props.onClick();
+    tree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+  }
+  return { tree, button: dshOpenButton(tree.tree) };
+}
+
+const clickAndRead = async (node) => {
+  node.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  return hostElements(render(SidebarTab, { sessionId: "selftest", inputActions: null }).tree, "sh-toast")
+    .map(textOf)
+    .join(" ");
+};
+
+const localRow = await findDshRow();
+assert.ok(localRow.button !== undefined, "a DSH row must offer an open control");
+const localToast = await clickAndRead(localRow.button);
+assert.ok(
+  localToast.includes("failed"),
+  `on this machine the DSH shortcut is taken (no uiWorkspace here, so it fails): ${JSON.stringify(localToast)}`,
+);
+
+// Now answer as a remote environment, and let the bar's effect pick it up.
+answerAsRemote = true;
+let remoteTree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+for (const effect of remoteTree.effects) {
+  const cleanup = effect();
+  if (typeof cleanup === "function") cleanups.push(cleanup);
+}
+await new Promise((resolve) => setTimeout(resolve, 250));
+remoteTree = render(SidebarTab, { sessionId: "selftest", inputActions: null });
+
+const remoteRow = await findDshRow();
+assert.ok(remoteRow.button !== undefined, "the DSH row must still offer an open control on a remote environment");
+const remoteToast = await clickAndRead(remoteRow.button);
+assert.ok(
+  !remoteToast.includes("failed"),
+  `a remote environment must NOT take the local DSH shortcut: ${JSON.stringify(remoteToast)}`,
+);
+assert.ok(
+  remoteToast.includes("openNone"),
+  `it must ask the Host instead, which is what knows the machine: ${JSON.stringify(remoteToast)}`,
+);
+answerAsRemote = false;
+console.log("remote: a DSH session is not opened in the local DSH");
+
+/* ------------------------------------------------------------------ *
+ * A remote session is typed into this window's own terminal
+ * ------------------------------------------------------------------ */
+
+/**
+ * The one-click path for another machine: the Host hands back the command (it
+ * cannot type into a browser tab) and the client puts it into the Sidebar's
+ * built-in terminal — the tab the person already has, rather than a new cmux
+ * workspace or a Terminal.app window.
+ *
+ * The timing here is the part that cannot be reasoned about from the source:
+ * `view.write()` is a SILENT no-op until the terminal is mounted and writable,
+ * so the client polls, and a test that skipped the poll would pass while the
+ * real thing did nothing.
+ */
+answerOpenAsCommand = `ssh -t 'pro14uu' 'exec "$SHELL" -lic "exec claude --resume abc"'`;
+const terminalRow = await findDshRow();
+assert.ok(terminalRow.button !== undefined, "the DSH row must still offer an open control");
+terminalRow.button.props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 400));
+
+assert.equal(terminalCalls.opened.length, 1, "a terminal tab must be asked for exactly once");
+assert.equal(terminalCalls.opened[0].kind, "terminal", "and it must be the built-in terminal kind");
+assert.equal(terminalCalls.written.length, 1, "the command must be typed, not just copied");
+assert.equal(terminalCalls.written[0], `${answerOpenAsCommand}\n`, "with a newline, so the shell runs it");
+answerOpenAsCommand = null;
+console.log("terminal: a remote open is typed into this window's terminal tab");
+
+/* ------------------------------------------------------------------ *
+ * The machine manager
+ * ------------------------------------------------------------------ */
+
+/**
+ * The list is answered by the real Host, which reads this machine's actual
+ * `~/.ssh/config` — so the assertion is that whatever aliases that file holds
+ * are *offered*, not a fixed set. Row provenance is asserted too: an alias a
+ * file owns is not removable from here, and a manager that did not say so would
+ * look broken when "forget" did nothing.
+ */
+const managerEntry = flatten(render(SidebarTab, { sessionId: "selftest", inputActions: null }).tree).find(
+  (node) => node.type === "button" && textOf(node) === "hostsMode",
+);
+assert.ok(managerEntry !== undefined, "the panel must offer a way into the machine manager");
+managerEntry.props.onClick();
+
+const manager = render(Hosts, {});
+assert.ok(
+  flatten(manager.tree).some((node) => node.type === "button" && node.props?.title === "close"),
+  "the manager must render when opened",
+);
+for (const effect of manager.effects) {
+  const cleanup = effect();
+  if (typeof cleanup === "function") cleanups.push(cleanup);
+}
+
+let managerFilled = manager;
+for (let attempt = 0; attempt < 8; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  managerFilled = render(Hosts, {});
+  for (const effect of managerFilled.effects) {
+    const cleanup = effect();
+    if (typeof cleanup === "function") cleanups.push(cleanup);
+  }
+  if (hostElements(managerFilled.tree, "sh-hosts-row").length > 0) break;
+}
+
+const hostRows = hostElements(managerFilled.tree, "sh-hosts-row");
+assert.ok(hostRows.length > 0, "the manager must list machines");
+const hostText = hostRows.map(textOf).join(" | ");
+const sshText = await readFile(join(homedir(), ".ssh", "config"), "utf8").catch(() => "");
+const declared = parseSshConfig(sshText);
+for (const host of declared) {
+  assert.ok(hostText.includes(host.alias), `an alias ssh already knows must be listed: ${host.alias}`);
+}
+assert.ok(
+  // The harness's `t` returns the key, so this is the locale key that must be
+  // on the row — which is the point: a row that did not name its source would
+  // make "forget" look broken on an alias a file owns.
+  declared.length === 0 || hostText.includes("hostsSourceSsh"),
+  "and each row must say which file it came from",
+);
+
+// The add form is how the first machine gets added at all.
+const addButton = flatten(managerFilled.tree).find((node) => node.type === "button" && textOf(node) === "hostsAdd");
+assert.ok(addButton !== undefined, "the manager must offer a way to add a machine");
+addButton.props.onClick();
+const adding = render(Hosts, {});
+assert.ok(
+  flatten(adding.tree).some((node) => node.type === "input" && node.props?.placeholder === "hostsAlias"),
+  "opening the add form must ask for an ssh alias",
+);
+console.log(`hosts: ${hostRows.length} machines listed, ${declared.length} from ~/.ssh/config`);
 
 for (const cleanup of cleanups) cleanup();
 globalThis.fetch = realFetch;

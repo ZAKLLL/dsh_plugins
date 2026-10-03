@@ -6,12 +6,18 @@
  * @module dsh-session-hub/sources/dsh
  */
 
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
 import {
-  UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
-  parseJsonl, projectOf, textOf, toMs, trackTool,
+  UNTITLED,
+  decodeZstdFrames,
+  dshHome,
+  looksInjected,
+  oneLine,
+  parseJsonl,
+  projectOf,
+  textOf,
+  toMs,
   handoffName,
   compactionHeading,
   turnHeading,
@@ -20,8 +26,21 @@ import {
 /** The one place this adapter spells its own name. */
 const LABEL = "DSH";
 
-async function buildDsh(file, stats) {
-  const text = decodeZstdFrames(await readFile(file)).toString("utf8");
+/**
+ * Build one DSH session from its whole store.
+ *
+ * The third argument is the store's bytes, not parsed events: DSH's store is
+ * concatenated zstd frames, so it is not byte-addressable and there is no prefix
+ * to parse (see `BuildValue`). The engine reads it through the active store —
+ * this function must not reach for `node:fs`, or a remote environment would read
+ * this machine's disk.
+ *
+ * Synchronous on purpose. It was `async` and read the file itself before the
+ * environment switcher existed, which quietly made DSH the one adapter violating
+ * the contract that `build` is synchronous.
+ */
+function buildDsh(file, stats, buffer) {
+  const text = decodeZstdFrames(buffer).toString("utf8");
   const events = parseJsonl(text);
 
   const header = events.find((event) => event.type === "session") ?? {};
@@ -123,6 +142,11 @@ export default defineAdapter({
   clientOwned: true,
   resumeCommand: () => null,
   root: () => join(dshHome(), "sessions"),
+  // DSH keeps its provider keys here, so the body is marked sensitive: the panel
+  // asks before putting a credential on screen.
+  configFiles: () => [
+    { path: join(dshHome(), ".credentials.yaml"), label: ".credentials.yaml", language: "yaml", sensitive: true },
+  ],
   storeKind: "frames",
   // Liveness comes from the in-process agent registry, not the process table:
   // a DSH agent IS this process.

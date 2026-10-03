@@ -81,6 +81,8 @@ window.__ModuleLoader__.load({
       deleteBody: "This removes the session from {agent}'s own store. It cannot be undone.",
       deleteRunning: "That agent is still running. Deleting a live session's log can break it.",
       deleteForce: "Delete anyway",
+      deleteRemote: "This session lives on {label}. Whether its agent is still running cannot be checked from here.",
+      deleteRemoteForce: "I understand — delete on {label} anyway",
       cancel: "Cancel",
       deleted: "Deleted from {agent}",
       expandTree: "Show {n} subagent sessions",
@@ -148,6 +150,55 @@ window.__ModuleLoader__.load({
       noWorkspace: "DSH workspace registry or navigation is unavailable",
       liveCollapse: "Collapse the live preview",
       liveExpand: "Expand the live preview",
+      configMode: "Config",
+      environment: "Environment",
+      environmentHint: "Which machine's sessions are shown.",
+      envUnreachable: "{label} is unreachable",
+      envBack: "Switch back to this machine",
+      envRetry: "Retry the connection",
+      envProblems: "Some configured environments were rejected: {message}",
+      envUnreachableMark: "unreachable",
+      configTitle: "Agent configuration files",
+      configHint: "Read and edit each agent's own config on the active environment.",
+      configSelect: "Pick a file to read or edit.",
+      configMissing: "not created yet",
+      configSensitive: "holds keys",
+      configReveal: "Reveal",
+      configHide: "Hide",
+      configSave: "Save",
+      configSaving: "Saving…",
+      configRevert: "Revert",
+      configSaved: "Saved {name}",
+      configBackup: "The previous version was kept at {path}",
+      configUnsaved: "Unsaved changes",
+      configReadOnly: "This file is {bytes} — too large to edit here",
+      openNone: "Cannot open this session here: {message}",
+      typedInTerminal: "Typing it into this window's terminal",
+      terminalFallback: "Could not type it into the terminal: {message}",
+      hostsMode: "Machines",
+      hostsTitle: "Machines",
+      hostsHint: "Machines this panel can switch to for sessions and config files.",
+      hostsAdd: "Add a machine",
+      hostsAlias: "ssh alias, e.g. pro14uu",
+      hostsLabel: "Display name (optional)",
+      hostsHome: "Remote home (optional)",
+      hostsDshHome: "Remote DSH home (optional)",
+      hostsSave: "Save",
+      hostsForget: "Forget",
+      hostsEdit: "Edit",
+      hostsTest: "Test",
+      hostsUse: "Use",
+      hostsInUse: "in use",
+      hostsReachable: "reachable",
+      hostsUnreachable: "unreachable",
+      hostsSourceSsh: "from ~/.ssh/config",
+      hostsSourceSaved: "added here",
+      hostsSourcePublished: "from remote-agent",
+      hostsSourceConfig: "from the plugin config",
+      hostsSshPath: "Aliases come from {path}; nothing here edits that file.",
+      hostsSaved: "Saved {alias}",
+      hostsForgotten: "Forgot {alias}",
+      hostsEmpty: "No machines yet. Add one above, or put an alias in ~/.ssh/config.",
     };
 
     const DICT_ZH = {
@@ -199,6 +250,8 @@ window.__ModuleLoader__.load({
       deleteBody: "这会从 {agent} 自己的存储里删除该会话，无法撤销。",
       deleteRunning: "该 agent 仍在运行。删除运行中会话的日志可能让它出错。",
       deleteForce: "仍然删除",
+      deleteRemote: "这条会话在 {label} 上。它那边的 agent 是否还在运行，从这里查不到。",
+      deleteRemoteForce: "我知道——仍然在 {label} 上删除",
       cancel: "取消",
       deleted: "已从 {agent} 删除",
       expandTree: "展开 {n} 个子代理会话",
@@ -266,6 +319,55 @@ window.__ModuleLoader__.load({
       noWorkspace: "DSH 工作区注册表或导航不可用",
       liveCollapse: "收起实时预览",
       liveExpand: "展开实时预览",
+      configMode: "配置",
+      environment: "环境",
+      environmentHint: "当前显示哪台机器的会话。",
+      envUnreachable: "{label} 连不上",
+      envBack: "切回本机",
+      envRetry: "重试连接",
+      envProblems: "有环境配置被拒绝：{message}",
+      envUnreachableMark: "连不上",
+      configTitle: "Agent 配置文件",
+      configHint: "在当前环境下直接读写各 agent 自己的配置文件。",
+      configSelect: "选择一个文件进行查看或编辑。",
+      configMissing: "尚未创建",
+      configSensitive: "含密钥",
+      configReveal: "显示",
+      configHide: "隐藏",
+      configSave: "保存",
+      configSaving: "保存中…",
+      configRevert: "还原",
+      configSaved: "已保存 {name}",
+      configBackup: "旧版本已备份到 {path}",
+      configUnsaved: "有未保存的修改",
+      configReadOnly: "该文件 {bytes}，太大，不在这里编辑",
+      openNone: "无法在这里打开这条会话：{message}",
+      typedInTerminal: "已输入到这个窗口的终端里",
+      terminalFallback: "没能在终端里输入：{message}",
+      hostsMode: "机器",
+      hostsTitle: "远端机器",
+      hostsHint: "面板可以切换过去看会话、改配置的机器。",
+      hostsAdd: "添加机器",
+      hostsAlias: "ssh 别名，例如 pro14uu",
+      hostsLabel: "显示名（可选）",
+      hostsHome: "远端 home（可选）",
+      hostsDshHome: "远端 DSH home（可选）",
+      hostsSave: "保存",
+      hostsForget: "忘记",
+      hostsEdit: "编辑",
+      hostsTest: "测试",
+      hostsUse: "用作环境",
+      hostsInUse: "使用中",
+      hostsReachable: "可连接",
+      hostsUnreachable: "连不上",
+      hostsSourceSsh: "来自 ~/.ssh/config",
+      hostsSourceSaved: "在这里添加",
+      hostsSourcePublished: "来自 remote-agent",
+      hostsSourceConfig: "来自插件配置",
+      hostsSshPath: "别名来自 {path}；这里不会改那个文件。",
+      hostsSaved: "已保存 {alias}",
+      hostsForgotten: "已忘记 {alias}",
+      hostsEmpty: "还没有机器。可以在上面添加，或往 ~/.ssh/config 里写一个别名。",
     };
 
     /* ---------------------------------------------------------------- *
@@ -463,6 +565,50 @@ window.__ModuleLoader__.load({
 /* The at-sign for the reference action: text, not an icon, so it cannot be
    mistaken for another verb. */
 .sh-at{font-size:13px;font-weight:600;line-height:1}
+/* The environment switcher. Only rendered when a remote is configured; it sits
+   directly under the head so the answer to "which machine is this" is never
+   below the fold. */
+.sh-env{flex:none;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;display:flex}
+.sh-env-label{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10.5px;line-height:16px;text-transform:uppercase;letter-spacing:.06em}
+.sh-env .sh-chips{flex-wrap:wrap}
+.sh-env-warn{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-state-error-primary);border-radius:8px;color:var(--dsw-alias-label-primary);flex-basis:100%;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;font-size:11.5px;display:flex}
+.sh-env-warn-text{color:var(--dsw-alias-state-error-primary);font-weight:600;flex:none}
+.sh-env-warn-detail{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;min-width:0;flex:1 1 200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sh-env-problems{color:var(--dsw-alias-label-tertiary);flex-basis:100%;font-size:10.5px;line-height:1.5}
+/* The config editor. A wider frame than the library panel: it holds a file. */
+.sh-card-config{width:min(880px,100vw - 32px);height:min(760px,calc(100% - 80px))}
+.sh-config{flex:auto;flex-direction:column;gap:8px;min-height:0;display:flex}
+.sh-config-head{align-items:center;gap:8px;flex-wrap:wrap;display:flex}
+.sh-config-name{color:var(--dsw-alias-label-primary);font-size:12.5px;font-weight:600}
+.sh-config-agent,.sh-config-hint,.sh-config-size,.sh-config-absent,.sh-config-note{color:var(--dsw-alias-label-tertiary);font-size:11px}
+.sh-config-hint{line-height:1.6}
+.sh-config-path{color:var(--dsw-alias-label-secondary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;word-break:break-all}
+.sh-config-error{color:var(--dsw-alias-state-error-primary);font-size:11.5px;line-height:1.6}
+.sh-config-group{margin-bottom:10px}
+.sh-config-agent-name{color:var(--dsw-alias-label-secondary);margin-bottom:4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.sh-config-file{font:inherit;color:var(--dsw-alias-label-primary);background:0 0;border:1px solid transparent;border-radius:8px;cursor:pointer;align-items:center;gap:8px;width:100%;padding:6px 9px;font-size:12px;display:flex;text-align:left}
+.sh-config-file:hover{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2)}
+.sh-config-file-name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sh-config-editor{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:8px;outline:none;flex:auto;width:100%;min-height:280px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;resize:none;tab-size:2}
+.sh-config-editor:focus{border-color:var(--dsw-alias-label-secondary)}
+.sh-badge{border:1px solid var(--dsw-alias-border-l2);border-radius:999px;color:var(--dsw-alias-label-tertiary);flex:none;padding:1px 7px;font-size:10px;line-height:15px}
+.sh-badge-warn{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
+.sh-btn-on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.sh-card-config .sh-scroll{flex-direction:column;display:flex}
+/* The machine manager. A row is a machine; each says where it came from, because
+   "forget" on an alias a file owns would look broken otherwise. */
+.sh-hosts{flex:auto;flex-direction:column;gap:8px;min-height:0;display:flex}
+.sh-hosts-add{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;align-items:center;gap:8px;flex-wrap:wrap;padding:8px;display:flex}
+.sh-hosts-fields{align-items:center;gap:6px;flex-wrap:wrap;display:flex}
+.sh-hosts-fields .sh-search{flex:1 1 130px;min-width:110px}
+.sh-hosts-add .sh-search{flex:1 1 150px;min-width:110px}
+.sh-hosts-row{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;flex-wrap:wrap;align-items:center;gap:8px;padding:7px 9px;display:flex}
+.sh-hosts-main{flex:1 1 240px;min-width:0}
+.sh-hosts-line{align-items:center;gap:6px;flex-wrap:wrap;display:flex}
+.sh-hosts-alias{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.sh-hosts-on{color:var(--dsw-alias-label-primary);font-weight:600}
+.sh-hosts-badge-on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.sh-hosts-actions{align-items:center;gap:5px;flex-wrap:wrap;display:flex}
 `;
 
     function installStyles() {
@@ -508,6 +654,30 @@ window.__ModuleLoader__.load({
     const spawning = createStore(null);
     /** Bumped after a destructive change so every mounted body reloads. */
     const revision = createStore(0);
+    /**
+     * Which machine the panel is pointed at, shared by every seat.
+     *
+     * It lives on the Host, not in `localStorage`, so the choice follows the
+     * person between tabs and browsers rather than the tab. This store is only
+     * the client's copy of it; the Host is the one that owns the answer.
+     */
+    const environment = createStore(null);
+    /**
+     * Whether the agent-config editor is open.
+     *
+     * Its own overlay rather than a mode inside the panel, because editing a file
+     * wants width, and because it is reachable from the sidebar tab as well as
+     * from the full-screen panel.
+     */
+    const configOpen = createStore(false);
+    /**
+     * Whether the machine manager is open.
+     *
+     * Its own overlay, and reachable with no remote configured at all: a switcher
+     * that only appears once a machine exists could never be used to add the
+     * first one.
+     */
+    const hostsOpen = createStore(false);
 
     let toastTimer = null;
     function say(message, error) {
@@ -539,6 +709,35 @@ window.__ModuleLoader__.load({
         throw new Error(`${body?.error ?? `session-hub ${op} failed`}${supported}`);
       }
       return body;
+    }
+
+    /**
+     * The active environment, and the ones it can be switched to.
+     *
+     * `problems` is merged rather than replaced: a probe answers without the
+     * config diagnostics, and dropping them would make a rejected host disappear
+     * from the warning the moment someone retried a connection.
+     */
+    async function loadEnvironment(force) {
+      const result = await hub("environment", force === true ? { action: "probe" } : { action: "list" });
+      const next = { ...(environment.get() ?? {}), ...result };
+      environment.set(next);
+      return next;
+    }
+
+    /**
+     * Move every seat to another machine.
+     *
+     * The revision bump is the load-bearing part: every list, preview and reader
+     * on screen was the previous environment's data, and re-rendering them from
+     * the old snapshot under the new machine's name is exactly the misattribution
+     * the switcher exists to prevent.
+     */
+    async function switchEnvironment(id) {
+      const result = await hub("environment", { action: "set", id });
+      environment.set({ ...(environment.get() ?? {}), ...result });
+      revision.set(revision.get() + 1);
+      return result;
     }
 
     /* ---------------------------------------------------------------- *
@@ -1327,8 +1526,167 @@ window.__ModuleLoader__.load({
        * everything else is resumed in a cmux workspace (Terminal.app when cmux
        * is unavailable).
        */
+      /* ---------------------------------------------------------------- *
+       * This window's own terminal tab
+       * ---------------------------------------------------------------- */
+
+      /** How long the tab may take to appear, and to start accepting input. */
+      const TERMINAL_OPEN_MS = 4000;
+      const TERMINAL_WRITE_MS = 6000;
+
+      /** The terminal tabs already open, so the new one can be told apart. */
+      function terminalTabIds(sidebar) {
+        try {
+          const tabs = sidebar.openTabs?.getSnapshot?.();
+          if (!Array.isArray(tabs)) return new Set();
+          return new Set(tabs.filter((tab) => tab?.kind === "terminal").map((tab) => tab.id ?? tab.key));
+        } catch {
+          return new Set();
+        }
+      }
+
+      /**
+       * The terminal tab that was not open before, or null while it is coming.
+       *
+       * "Newest terminal tab" alone would be wrong the moment another terminal is
+       * restored or opened for a different Session at the same moment, so a tab
+       * belonging to the Session we asked for wins; newest is only the tie-break.
+       */
+      function newTerminalTab(sidebar, before, sessionId) {
+        try {
+          const tabs = sidebar.openTabs?.getSnapshot?.();
+          if (!Array.isArray(tabs)) return null;
+          const fresh = tabs.filter((tab) => tab?.kind === "terminal" && !before.has(tab.id ?? tab.key));
+          if (fresh.length === 0) return null;
+          const mine = fresh.filter((tab) => tab.sessionId === undefined || tab.sessionId === sessionId);
+          return (mine.length > 0 ? mine : fresh).pop() ?? null;
+        } catch {
+          return null;
+        }
+      }
+
+      async function pollUntil(predicate, timeoutMs, stepMs = 150) {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+          let value = null;
+          try {
+            value = predicate();
+          } catch {
+            value = null;
+          }
+          if (value) return value;
+          if (Date.now() >= deadline) return value;
+          await new Promise((resolve) => setTimeout(resolve, stepMs));
+        }
+      }
+
+      /**
+       * Type a command into this window's built-in terminal, reusing its tab.
+       *
+       * Reached the same way the built-in shortcut does:
+       *
+       *   target = sidebarRight.commandTarget(null)   // no DOM element needed
+       *   sidebarRight.openTabFromTarget("terminal", target)
+       *
+       * `commandTarget(null)` falls back to the on-screen Session's active dock
+       * pane, which is why a button can call it at all. `webTerminals.view()`
+       * then returns the SAME per-(session, tab) view the tab itself renders, and
+       * `write()` types into it — so the command lands in a real shell rather
+       * than the clipboard.
+       *
+       * The timing is the whole difficulty and it is not optional: `view.write()`
+       * is a SILENT no-op until the view is mounted, attached and writable,
+       * because input with no attachment has nowhere to go. So this waits, and
+       * gives up honestly rather than pretending.
+       *
+       * @returns {Promise<string|null>} null on success, else why it could not.
+       */
+      async function typeInTerminalTab(command) {
+        const sidebar = faces.sidebarRight();
+        const terminals = faces.webTerminals();
+        if (sidebar === null || typeof sidebar.commandTarget !== "function" || typeof sidebar.openTabFromTarget !== "function") {
+          return "the Sidebar tab API is not available in this build";
+        }
+        if (terminals === null || typeof terminals.view !== "function") {
+          return "the terminal service is not available in this build";
+        }
+
+        const before = terminalTabIds(sidebar);
+        const target = sidebar.commandTarget(null);
+        if (target === null || target === undefined) return "no on-screen Session to open a terminal for";
+        sidebar.openTabFromTarget("terminal", target);
+
+        const tab = await pollUntil(() => newTerminalTab(sidebar, before, target.sessionId), TERMINAL_OPEN_MS);
+        if (tab === null || tab === undefined) return "the terminal tab did not appear";
+
+        const sessionId = tab.sessionId ?? target.sessionId;
+        const tabId = tab.id ?? tab.key;
+        // The terminal UI derives these from the occurrence it is showing;
+        // reading the same two values is what makes `view()` hand back the
+        // instance that is actually on screen rather than a second one.
+        const occurrence = sidebar.tabDomain?.occurrence?.(sessionId, { id: tabId });
+        const snapshot = occurrence?.navigation?.getSnapshot?.();
+        const params = snapshot?.params;
+        const contentId = tab.contentId ?? snapshot?.address;
+        const view = terminals.view(
+          sessionId,
+          tabId,
+          contentId,
+          params !== undefined && params !== null && "terminalId" in params ? params.terminalId : undefined,
+          params !== undefined && params !== null && "shellPath" in params ? params.shellPath : undefined,
+        );
+
+        const writable = await pollUntil(
+          () => view?.attachmentId !== undefined && view?.state?.getSnapshot?.().writable === true,
+          TERMINAL_WRITE_MS,
+        );
+        if (writable !== true) return "the terminal opened but did not accept input in time";
+        view.write(`${command}\n`);
+        return null;
+      }
+
+      /**
+       * Open a command that a remote machine needs run: terminal tab first.
+       *
+       * Falls back to letting the Host open a window of its own (cmux, or
+       * Terminal.app), and only then to the clipboard — so a build whose Sidebar
+       * terminal cannot be driven still opens something, and the person is told
+       * which rung of that ladder they landed on.
+       */
+      async function runRemoteCommand(command, { onLaunch, onCopy }) {
+        const failure = await typeInTerminalTab(command);
+        if (failure === null) {
+          say(t("typedInTerminal"));
+          return;
+        }
+        try {
+          const launched = await onLaunch();
+          if (launched?.kind === "cmux" || launched?.kind === "terminal") {
+            say(t("opened", { terminal: launched.terminal ?? "terminal" }));
+            return;
+          }
+        } catch {
+          /* Nothing opened a window either; the clipboard is the last resort. */
+        }
+        await onCopy(failure);
+      }
+
+      /**
+       * Whether the panel is pointed at another machine.
+       *
+       * Read at the moment of the action rather than passed down, because the
+       * environment can change while a dialog is open — and a stale "local"
+       * would open a remote session in this machine's DSH.
+       */
+      function onRemoteEnvironment() {
+        return (environment.get()?.active?.kind ?? "local") === "remote";
+      }
+
       async function openSession(card, close) {
-        if (card.agent === "dsh") {
+        // The DSH shortcut is a *local* one: it hands the session to this
+        // machine's workspace registry. A DSH session on another machine belongs
+        // to that machine's DSH, so it goes to the Host, which says so.
+        if (card.agent === "dsh" && !onRemoteEnvironment()) {
           const uiWorkspace = faces.uiWorkspace();
           if (uiWorkspace === null) {
             say(t("failed", { message: "uiWorkspace unavailable" }), true);
@@ -1340,14 +1698,33 @@ window.__ModuleLoader__.load({
         }
         try {
           const result = await hub("open", { key: card.key });
-          if (result.kind === "desktop") {
+          if (result.kind === "terminal-command") {
+            await runRemoteCommand(result.command, {
+              // The Host opens a window of its own when the tab cannot be driven.
+              onLaunch: () => hub("open", { key: card.key, launch: true }),
+              onCopy: async (reason) => {
+                try {
+                  await navigator.clipboard.writeText(result.command);
+                  say(`${t("copied")} — ${result.command}`);
+                } catch {
+                  say(t("terminalFallback", { message: reason }), true);
+                }
+              },
+            });
+          } else if (result.kind === "desktop") {
             say(t("openedEditor", { editor: result.terminal ?? "the app" }));
           } else if (result.kind === "focus") {
             say(t("focused", { terminal: result.terminal ?? "cmux" }));
           } else if (result.kind === "cmux" || result.kind === "terminal") {
             say(t("opened", { terminal: result.terminal ?? "terminal" }));
           } else {
+            // Nothing could be opened. Prefer the Host's own explanation over a
+            // bare "copied —", which is what an empty command used to produce.
             const command = result.command ?? card.resumeCommand ?? "";
+            if (command === "") {
+              say(t("openNone", { message: result.reason ?? card.agentLabel }), true);
+              return;
+            }
             try {
               await navigator.clipboard.writeText(command);
               say(`${t("copied")} — ${command}`);
@@ -1382,6 +1759,617 @@ window.__ModuleLoader__.load({
        * "Continue here" writes into — the Sidebar tab is session-scoped and holds
        * `inputActions` directly, while the overlay reads the dock bridge's store.
        */
+      /**
+       * Which machine the panel is showing, and the way to another one.
+       *
+       * Renders nothing until there is somewhere else to go: a switcher with one
+       * option is furniture, and a machine with no remotes configured should not
+       * grow a toolbar for it. An unreachable environment gets a banner with the
+       * reason and a way back — never an empty list, because "cannot connect" and
+       * "has no sessions" must not look the same.
+       */
+      function EnvironmentBar() {
+        const state = React.useSyncExternalStore(environment.subscribe, environment.get, environment.get);
+        const [busy, setBusy] = React.useState(false);
+
+        React.useEffect(() => {
+          loadEnvironment(false).catch(() => {});
+        }, []);
+
+        const hasRemote = (state?.environments ?? []).some((entry) => entry.kind === "remote");
+        if (state === null || !hasRemote) return null;
+
+        const active = state.active ?? null;
+        const unreachable = active !== null && active.reachable !== true;
+
+        const go = async (id) => {
+          if (busy || id === active?.id) return;
+          setBusy(true);
+          try {
+            await switchEnvironment(id);
+          } catch (caught) {
+            say(String(caught?.message ?? caught), true);
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        return h(
+          "div",
+          { className: "sh-env" },
+          h("span", { className: "sh-env-label" }, t("environment")),
+          h(
+            "div",
+            { className: "sh-chips" },
+            state.environments.map((entry) =>
+              h(
+                "button",
+                {
+                  key: entry.id,
+                  type: "button",
+                  disabled: busy,
+                  className: `sh-chip${entry.id === active?.id ? " sh-chip-on" : ""}`,
+                  title: entry.alias === null ? t("environmentHint") : `${entry.label} · ${entry.alias}`,
+                  onClick: () => go(entry.id),
+                },
+                entry.kind === "remote" ? `⇄ ${entry.label}` : entry.label,
+              ),
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "sh-chip",
+                title: t("hostsHint"),
+                onClick: () => hostsOpen.set(true),
+              },
+              `⚙ ${t("hostsMode")}`,
+            ),
+          ),
+          unreachable &&
+            h(
+              "div",
+              { className: "sh-env-warn" },
+              h("span", { className: "sh-env-warn-text" }, t("envUnreachable", { label: active.label })),
+              typeof active.error === "string" && active.error !== "" && h("code", { className: "sh-env-warn-detail" }, active.error),
+              h("button", { type: "button", className: "sh-btn", disabled: busy, onClick: () => go("local") }, t("envBack")),
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "sh-btn",
+                  disabled: busy,
+                  onClick: async () => {
+                    setBusy(true);
+                    try {
+                      await loadEnvironment(true);
+                    } catch (caught) {
+                      say(String(caught?.message ?? caught), true);
+                    } finally {
+                      setBusy(false);
+                    }
+                  },
+                },
+                t("envRetry"),
+              ),
+            ),
+          (state.problems ?? []).length > 0 &&
+            h("div", { className: "sh-env-problems" }, t("envProblems", { message: state.problems.join("; ") })),
+        );
+      }
+
+      /**
+       * The agents' own configuration files, on the active environment.
+       *
+       * The Host fences every path to what the adapter declared, so this can only
+       * ever read and write those — the client never names an arbitrary file. A
+       * file marked sensitive stays masked until it is explicitly revealed: a
+       * credentials file should not be on screen merely because the panel opened.
+       *
+       * The editor replaces the list rather than sitting beside it, because one
+       * of the two seats this renders in is a narrow column.
+       */
+      function ConfigPanel() {
+        const state = React.useSyncExternalStore(environment.subscribe, environment.get, environment.get);
+        const [groups, setGroups] = React.useState(null);
+        const [error, setError] = React.useState(null);
+        const [selected, setSelected] = React.useState(null);
+        const [body, setBody] = React.useState("");
+        const [original, setOriginal] = React.useState("");
+        const [revealed, setRevealed] = React.useState(false);
+        const [busy, setBusy] = React.useState(false);
+        const [backup, setBackup] = React.useState(null);
+        const environmentId = state?.active?.id ?? null;
+
+        const load = React.useCallback(async () => {
+          setError(null);
+          try {
+            const result = await hub("config", { action: "list" });
+            setGroups(result.agents ?? []);
+          } catch (caught) {
+            setError(String(caught?.message ?? caught));
+            setGroups([]);
+          }
+        }, []);
+
+        // Reload on an environment switch: every path on screen was the previous
+        // machine's, and showing them under the new machine's name would be a lie.
+        React.useEffect(() => {
+          setSelected(null);
+          setBackup(null);
+          load();
+        }, [load, environmentId]);
+
+        const openFile = React.useCallback(async (group, file) => {
+          setBusy(true);
+          setError(null);
+          setBackup(null);
+          try {
+            const result = await hub("config", { action: "read", agent: group.agent, path: file.path });
+            setSelected({ ...file, agent: group.agent, agentLabel: group.agentLabel, language: result.language, sensitive: result.sensitive === true });
+            setBody(result.text ?? "");
+            setOriginal(result.text ?? "");
+            setRevealed(result.sensitive !== true);
+          } catch (caught) {
+            setError(String(caught?.message ?? caught));
+          } finally {
+            setBusy(false);
+          }
+        }, []);
+
+        const save = React.useCallback(async () => {
+          if (selected === null) return;
+          setBusy(true);
+          setError(null);
+          try {
+            const result = await hub("config", { action: "write", agent: selected.agent, path: selected.path, text: body });
+            setOriginal(body);
+            setBackup(typeof result.backup === "string" ? result.backup : null);
+            say(t("configSaved", { name: selected.label }), false);
+            await load();
+          } catch (caught) {
+            setError(String(caught?.message ?? caught));
+          } finally {
+            setBusy(false);
+          }
+        }, [selected, body, load]);
+
+        if (selected !== null) {
+          const dirty = body !== original;
+          const hidden = selected.sensitive === true && !revealed;
+          return h(
+            "div",
+            { className: "sh-config" },
+            h(
+              "div",
+              { className: "sh-config-head" },
+              h(
+                "button",
+                { type: "button", className: "sh-btn", onClick: () => setSelected(null) },
+                `‹ ${t("configMode")}`,
+              ),
+              h("span", { className: "sh-config-name" }, selected.label),
+              h("span", { className: "sh-config-agent" }, selected.agentLabel),
+              selected.sensitive === true && h("span", { className: "sh-badge sh-badge-warn" }, t("configSensitive")),
+              dirty && h("span", { className: "sh-badge" }, t("configUnsaved")),
+              h("span", { className: "sh-spacer" }),
+              dirty &&
+                h("button", { type: "button", className: "sh-btn", disabled: busy, onClick: () => setBody(original) }, t("configRevert")),
+              selected.sensitive === true &&
+                h(
+                  "button",
+                  { type: "button", className: "sh-btn", onClick: () => setRevealed((current) => !current) },
+                  revealed ? t("configHide") : t("configReveal"),
+                ),
+              h("button", { type: "button", className: "sh-btn", disabled: busy || !dirty, onClick: save }, busy ? t("configSaving") : t("configSave")),
+            ),
+            h("div", { className: "sh-config-path" }, selected.path),
+            error !== null && h("div", { className: "sh-config-error" }, t("failed", { message: error })),
+            backup !== null && h("div", { className: "sh-config-note" }, t("configBackup", { path: backup })),
+            hidden
+              ? h(
+                  "div",
+                  { className: "sh-empty" },
+                  h("button", { type: "button", className: "sh-btn", onClick: () => setRevealed(true) }, t("configReveal")),
+                )
+              : h("textarea", {
+                  className: "sh-config-editor",
+                  value: body,
+                  spellCheck: false,
+                  onChange: (event) => setBody(event.target.value),
+                }),
+          );
+        }
+
+        return h(
+          "div",
+          { className: "sh-config" },
+          h("div", { className: "sh-config-head" }, h("span", { className: "sh-config-name" }, t("configTitle"))),
+          h("div", { className: "sh-config-hint" }, t("configHint")),
+          error !== null && h("div", { className: "sh-config-error" }, t("failed", { message: error })),
+          groups === null
+            ? h("div", { className: "sh-empty" }, t("loading"))
+            : groups.length === 0
+              ? h("div", { className: "sh-empty" }, t("configSelect"))
+              : groups.map((group) =>
+                  h(
+                    "div",
+                    { key: group.agent, className: "sh-config-group" },
+                    h("div", { className: "sh-config-agent-name" }, group.agentLabel),
+                    group.files.map((file) =>
+                      h(
+                        "button",
+                        {
+                          key: file.path,
+                          type: "button",
+                          disabled: busy,
+                          className: "sh-config-file",
+                          onClick: () => openFile(group, file),
+                        },
+                        h("span", { className: "sh-config-file-name" }, file.label),
+                        file.sensitive === true && h("span", { className: "sh-badge sh-badge-warn" }, t("configSensitive")),
+                        h("span", { className: "sh-spacer" }),
+                        file.exists === true
+                          ? h("span", { className: "sh-config-size" }, formatBytes(file.bytes))
+                          : h("span", { className: "sh-config-absent" }, t("configMissing")),
+                      ),
+                    ),
+                  ),
+                ),
+        );
+      }
+
+      /**
+       * The config editor in its own frame.
+       *
+       * The same `ConfigPanel` the sidebar could show, given the width a real
+       * file wants — and one implementation, so the two seats cannot drift in
+       * what a save is allowed to do.
+       */
+      function ConfigDialog() {
+        const open = React.useSyncExternalStore(configOpen.subscribe, configOpen.get, configOpen.get);
+        const close = React.useCallback(() => configOpen.set(false), []);
+        useEscape(open, close);
+        if (open !== true) return null;
+        return h(
+          "div",
+          { className: "sh-backdrop", onClick: close },
+          h(
+            "div",
+            {
+              className: "sh-card sh-card-config",
+              role: "dialog",
+              "aria-modal": "true",
+              "aria-label": t("configTitle"),
+              onClick: (event) => event.stopPropagation(),
+            },
+            h(
+              "div",
+              { className: "sh-head" },
+              h(HubIcon, { size: 18 }),
+              h("span", { className: "sh-title" }, t("configTitle")),
+              h("span", { className: "sh-sub" }, t("configHint")),
+              h("button", { type: "button", className: "sh-btn sh-close", onClick: close, title: t("close"), "aria-label": t("close") }, "✕"),
+            ),
+            h(EnvironmentBar),
+            h("div", { className: "sh-scroll" }, h(ConfigPanel)),
+          ),
+        );
+      }
+
+      /**
+       * The machines this panel can switch to, and the way to change that list.
+       *
+       * Three sources feed the switcher — `~/.ssh/config`, the machines
+       * `dsh-remote-agent` publishes, and the ones added here — so each row says
+       * where it came from. Without that, "forget" would look broken on an alias
+       * that a file owns.
+       *
+       * The list is deliberately reachable while an environment is unreachable:
+       * it is how you get out of one.
+       */
+      function HostsPanel() {
+        const [data, setData] = React.useState(null);
+        const [error, setError] = React.useState(null);
+        const [busy, setBusy] = React.useState(false);
+        /** alias → probe verdict, for the machines actually tested. */
+        const [probes, setProbes] = React.useState(() => new Map());
+        /** The row whose inline editor is open, and its draft. */
+        const [editing, setEditing] = React.useState(null);
+        const [draft, setDraft] = React.useState({ label: "", home: "", dshHome: "" });
+        const [adding, setAdding] = React.useState(false);
+        const [newHost, setNewHost] = React.useState({ alias: "", label: "", home: "", dshHome: "" });
+
+        const apply = React.useCallback((result) => {
+          if (result?.hosts !== undefined) setData(result);
+          // The switcher and the list of sessions both depend on the catalogue,
+          // so a change here has to travel.
+          if (result?.environments !== undefined) {
+            environment.set({ ...(environment.get() ?? {}), active: result.active, environments: result.environments });
+            revision.set(revision.get() + 1);
+          }
+        }, []);
+
+        const load = React.useCallback(async () => {
+          setError(null);
+          try {
+            setData(await hub("hosts", { action: "list" }));
+          } catch (caught) {
+            setError(String(caught?.message ?? caught));
+          }
+        }, []);
+
+        React.useEffect(() => {
+          load();
+        }, [load]);
+
+        /** One verb for toggle / edit / add — they all write the same record. */
+        const save = React.useCallback(
+          async (host) => {
+            setBusy(true);
+            setError(null);
+            try {
+              apply(
+                await hub("hosts", {
+                  action: "save",
+                  alias: host.alias,
+                  label: host.label ?? "",
+                  home: host.home ?? "",
+                  dshHome: host.dshHome ?? "",
+                  enabled: host.enabled !== false,
+                }),
+              );
+              say(t("hostsSaved", { alias: host.alias }), false);
+              setEditing(null);
+            } catch (caught) {
+              setError(String(caught?.message ?? caught));
+            } finally {
+              setBusy(false);
+            }
+          },
+          [apply],
+        );
+
+        const forget = React.useCallback(
+          async (alias) => {
+            setBusy(true);
+            setError(null);
+            try {
+              apply(await hub("hosts", { action: "remove", alias }));
+              say(t("hostsForgotten", { alias }), false);
+            } catch (caught) {
+              setError(String(caught?.message ?? caught));
+            } finally {
+              setBusy(false);
+            }
+          },
+          [apply],
+        );
+
+        const test = React.useCallback(async (alias) => {
+          setBusy(true);
+          try {
+            const result = await hub("hosts", { action: "probe", alias });
+            setProbes((current) => new Map(current).set(alias, result.probe));
+          } catch (caught) {
+            setProbes((current) =>
+              new Map(current).set(alias, { reachable: false, error: String(caught?.message ?? caught) }),
+            );
+          } finally {
+            setBusy(false);
+          }
+        }, []);
+
+        const sourceLabel = (source) => {
+          if (source === "ssh") return t("hostsSourceSsh");
+          if (source === "saved") return t("hostsSourceSaved");
+          if (source === "published") return t("hostsSourcePublished");
+          return t("hostsSourceConfig");
+        };
+
+        const fields = (value, onChange) =>
+          h(
+            "div",
+            { className: "sh-hosts-fields" },
+            h("input", {
+              className: "sh-search",
+              value: value.label,
+              placeholder: t("hostsLabel"),
+              onChange: (event) => onChange({ ...value, label: event.target.value }),
+            }),
+            h("input", {
+              className: "sh-search",
+              value: value.home,
+              placeholder: t("hostsHome"),
+              onChange: (event) => onChange({ ...value, home: event.target.value }),
+            }),
+            h("input", {
+              className: "sh-search",
+              value: value.dshHome,
+              placeholder: t("hostsDshHome"),
+              onChange: (event) => onChange({ ...value, dshHome: event.target.value }),
+            }),
+          );
+
+        const list = data?.hosts ?? null;
+
+        return h(
+          "div",
+          { className: "sh-hosts" },
+          h(
+            "div",
+            { className: "sh-config-head" },
+            h("span", { className: "sh-config-name" }, t("hostsTitle")),
+            h("span", { className: "sh-spacer" }),
+            h(
+              "button",
+              {
+                type: "button",
+                className: `sh-btn${adding ? " sh-btn-on" : ""}`,
+                disabled: busy,
+                onClick: () => {
+                  setAdding((current) => !current);
+                  setEditing(null);
+                },
+              },
+              t("hostsAdd"),
+            ),
+          ),
+          h("div", { className: "sh-config-hint" }, t("hostsHint")),
+          h("div", { className: "sh-config-agent" }, t("hostsSshPath", { path: data?.sshConfigPath ?? "" })),
+          error !== null && h("div", { className: "sh-config-error" }, t("failed", { message: error })),
+
+          adding &&
+            h(
+              "div",
+              { className: "sh-hosts-add" },
+              h("input", {
+                className: "sh-search",
+                value: newHost.alias,
+                placeholder: t("hostsAlias"),
+                onChange: (event) => setNewHost({ ...newHost, alias: event.target.value }),
+              }),
+              fields(newHost, setNewHost),
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "sh-btn",
+                  disabled: busy || newHost.alias.trim() === "",
+                  onClick: async () => {
+                    await save({ ...newHost, enabled: true });
+                    setNewHost({ alias: "", label: "", home: "", dshHome: "" });
+                    setAdding(false);
+                  },
+                },
+                t("hostsSave"),
+              ),
+            ),
+
+          list === null
+            ? h("div", { className: "sh-empty" }, t("loading"))
+            : list.length === 0
+              ? h("div", { className: "sh-empty" }, t("hostsEmpty"))
+              : list.map((host) => {
+                  const probe = probes.get(host.alias) ?? null;
+                  const isEditing = editing === host.alias;
+                  return h(
+                    "div",
+                    { key: host.alias, className: "sh-hosts-row" },
+                    h(
+                      "div",
+                      { className: "sh-hosts-main" },
+                      h(
+                        "div",
+                        { className: "sh-hosts-line" },
+                        h("span", { className: `sh-hosts-alias${host.isEnvironment ? " sh-hosts-on" : ""}` }, host.alias),
+                        h("span", { className: "sh-badge" }, sourceLabel(host.source)),
+                        host.isEnvironment && h("span", { className: "sh-badge sh-hosts-badge-on" }, t("hostsInUse")),
+                        probe !== null &&
+                          h(
+                            "span",
+                            { className: `sh-badge${probe.reachable ? "" : " sh-badge-warn"}` },
+                            probe.reachable ? t("hostsReachable") : t("hostsUnreachable"),
+                          ),
+                      ),
+                      h(
+                        "div",
+                        { className: "sh-config-agent" },
+                        [
+                          host.label !== host.alias ? host.label : null,
+                          host.user === null ? null : `${host.user}@`,
+                          host.hostName ?? null,
+                          host.port === null ? null : `:${host.port}`,
+                          probe?.error ?? null,
+                        ]
+                          .filter(Boolean)
+                          .join(" "),
+                      ),
+                    ),
+                    h(
+                      "div",
+                      { className: "sh-hosts-actions" },
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          className: `sh-chip${host.isEnvironment ? " sh-chip-on" : ""}`,
+                          disabled: busy,
+                          onClick: () => save({ ...host, enabled: !host.isEnvironment }),
+                        },
+                        t("hostsUse"),
+                      ),
+                      h("button", { type: "button", className: "sh-chip", disabled: busy, onClick: () => test(host.alias) }, t("hostsTest")),
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "sh-chip",
+                          disabled: busy,
+                          onClick: () => {
+                            setEditing(isEditing ? null : host.alias);
+                            setAdding(false);
+                            setDraft({ label: host.label ?? "", home: host.home ?? "", dshHome: host.dshHome ?? "" });
+                          },
+                        },
+                        t("hostsEdit"),
+                      ),
+                      host.source === "saved" &&
+                        h("button", { type: "button", className: "sh-chip", disabled: busy, onClick: () => forget(host.alias) }, t("hostsForget")),
+                    ),
+                    isEditing &&
+                      h(
+                        "div",
+                        { className: "sh-hosts-add" },
+                        fields(draft, setDraft),
+                        h(
+                          "button",
+                          {
+                            type: "button",
+                            className: "sh-btn",
+                            disabled: busy,
+                            onClick: () => save({ alias: host.alias, ...draft, enabled: true }),
+                          },
+                          t("hostsSave"),
+                        ),
+                      ),
+                  );
+                }),
+        );
+      }
+
+      /** The machine manager in its own frame. */
+      function HostsDialog() {
+        const open = React.useSyncExternalStore(hostsOpen.subscribe, hostsOpen.get, hostsOpen.get);
+        const close = React.useCallback(() => hostsOpen.set(false), []);
+        useEscape(open, close);
+        if (open !== true) return null;
+        return h(
+          "div",
+          { className: "sh-backdrop", onClick: close },
+          h(
+            "div",
+            {
+              className: "sh-card sh-card-config",
+              role: "dialog",
+              "aria-modal": "true",
+              "aria-label": t("hostsTitle"),
+              onClick: (event) => event.stopPropagation(),
+            },
+            h(
+              "div",
+              { className: "sh-head" },
+              h(HubIcon, { size: 18 }),
+              h("span", { className: "sh-title" }, t("hostsTitle")),
+              h("span", { className: "sh-sub" }, t("hostsHint")),
+              h("button", { type: "button", className: "sh-btn sh-close", onClick: close, title: t("close"), "aria-label": t("close") }, "✕"),
+            ),
+            h(EnvironmentBar),
+            h("div", { className: "sh-scroll" }, h(HostsPanel)),
+          ),
+        );
+      }
+
       function HubBody({ variant, composerFace, setDragging, close }) {
         const panelState = React.useSyncExternalStore(panel.subscribe, panel.get, panel.get);
         const [sessions, setSessions] = React.useState([]);
@@ -1685,6 +2673,7 @@ window.__ModuleLoader__.load({
               ),
               h("button", { type: "button", className: "sh-btn sh-close", onClick: close, title: t("close"), "aria-label": t("close") }, "✕"),
             ),
+          h(EnvironmentBar),
           h(
               "div",
               { className: "sh-tools" },
@@ -1750,6 +2739,16 @@ window.__ModuleLoader__.load({
                   },
                   t("onlyRunning"),
                   runningCount > 0 && h("span", { className: "sh-chip-n" }, String(runningCount)),
+                ),
+                h(
+                  "button",
+                  { type: "button", className: "sh-chip", onClick: () => configOpen.set(true) },
+                  t("configMode"),
+                ),
+                h(
+                  "button",
+                  { type: "button", className: "sh-chip", onClick: () => hostsOpen.set(true) },
+                  t("hostsMode"),
                 ),
                 variant === "sidebar" &&
                   h(
@@ -2033,12 +3032,18 @@ window.__ModuleLoader__.load({
             ),
           ),
           mode === "live"
-            ? h(LivePanel, {
-                onContinue: liveContinue,
-                onOpen: liveOpen,
-                transcriptCache,
-                onDragState: noop,
-              })
+            ? h(
+                React.Fragment,
+                null,
+                // The live view is about a machine too, so it says which one.
+                h(EnvironmentBar),
+                h(LivePanel, {
+                  onContinue: liveContinue,
+                  onOpen: liveOpen,
+                  transcriptCache,
+                  onDragState: noop,
+                }),
+              )
             : h(HubBody, { variant: "sidebar", composerFace: face, setDragging: noop, close: noop }),
         );
       }
@@ -2236,6 +3241,8 @@ window.__ModuleLoader__.load({
         const [busy, setBusy] = React.useState(false);
         const [error, setError] = React.useState(null);
         const [withRunning, setWithRunning] = React.useState(false);
+        /** Set only on a remote environment, where liveness cannot be checked. */
+        const [acknowledged, setAcknowledged] = React.useState(false);
 
         const close = React.useCallback(() => {
           if (busy) return;
@@ -2247,6 +3254,7 @@ window.__ModuleLoader__.load({
           setBusy(false);
           setError(null);
           setWithRunning(false);
+          setAcknowledged(false);
         }, [state]);
 
         if (state === null) return null;
@@ -2258,18 +3266,27 @@ window.__ModuleLoader__.load({
         // Skipping is the default for a bulk delete: a project-wide sweep should
         // remove what it can and report the rest, never fail as a whole.
         const willDelete = isGroup ? total - (withRunning ? 0 : running) : 1;
+        /**
+         * On another machine the Host refuses until it is told the caller knows
+         * liveness was not checked — the remote process table is invisible from
+         * here, so the usual "is it running" guard cannot fire at all. The
+         * acknowledgement is required *before* the button is live, because a
+         * refusal after the fact is a worse way to learn that.
+         */
+        const remoteLabel = onRemoteEnvironment() ? environment.get()?.active?.label ?? null : null;
+        const blocked = remoteLabel !== null && !acknowledged;
 
         const run = async () => {
           setBusy(true);
           setError(null);
           try {
             if (isGroup) {
-              const result = await hub("delete-many", { keys: state.keys, force: withRunning });
+              const result = await hub("delete-many", { keys: state.keys, force: withRunning || acknowledged });
               if (result.ok !== true) throw new Error(result.error ?? "delete failed");
               confirming.set(null);
               say(t("deletedMany", { n: result.deleted, m: result.skipped }));
             } else {
-              const result = await hub("delete", { key: card.key, force: card.running === true });
+              const result = await hub("delete", { key: card.key, force: card.running === true || acknowledged });
               if (result.ok !== true) throw new Error(result.error ?? "delete failed");
               confirming.set(null);
               say(t("deleted", { agent: card.agentLabel }));
@@ -2332,6 +3349,21 @@ window.__ModuleLoader__.load({
               ),
             running > 0 && !isGroup && h("div", { className: "sh-dialog-danger" }, t("deleteRunning")),
             running > 0 && isGroup && !withRunning && h("div", { className: "sh-dialog-warn" }, t("deleteGroupRunning", { n: running })),
+            // Only ever on a remote environment: the guard that normally protects
+            // a live session cannot see across the connection.
+            remoteLabel !== null && h("div", { className: "sh-dialog-danger" }, t("deleteRemote", { label: remoteLabel })),
+            remoteLabel !== null &&
+              h(
+                "label",
+                { className: "sh-dialog-check" },
+                h("input", {
+                  type: "checkbox",
+                  checked: acknowledged,
+                  disabled: busy,
+                  onChange: (event) => setAcknowledged(event.target.checked),
+                }),
+                h("span", null, t("deleteRemoteForce", { label: remoteLabel })),
+              ),
             error !== null && h("div", { className: "sh-dialog-danger" }, error),
             h(
               "div",
@@ -2341,8 +3373,8 @@ window.__ModuleLoader__.load({
                 "button",
                 {
                   type: "button",
-                  className: `sh-btn sh-danger${running > 0 || error !== null ? " sh-danger-strong" : ""}`,
-                  disabled: busy || willDelete === 0,
+                  className: `sh-btn sh-danger${running > 0 || error !== null || remoteLabel !== null ? " sh-danger-strong" : ""}`,
+                  disabled: busy || willDelete === 0 || blocked,
                   onClick: run,
                 },
                 busy
@@ -2413,12 +3445,31 @@ window.__ModuleLoader__.load({
           setBusy(true);
           setError(null);
           try {
-            if (agent === "dsh") {
+            // Starting a DSH session means registering a workspace in *this*
+            // machine's registry, so on another machine it goes to the Host,
+            // which refuses with the reason rather than creating something local
+            // that points at a remote path.
+            if (agent === "dsh" && !onRemoteEnvironment()) {
               await startDshSession(state.cwd, faces);
               say(t("startedDsh"));
             } else {
               const result = await hub("spawn", { agent, cwd: state.cwd });
               if (result.ok !== true) throw new Error(result.error ?? "spawn failed");
+              if (result.kind === "terminal-command") {
+                await runRemoteCommand(result.command, {
+                  onLaunch: () => hub("spawn", { agent, cwd: state.cwd, launch: true }),
+                  onCopy: async (reason) => {
+                    try {
+                      await navigator.clipboard.writeText(result.command);
+                      say(`${t("copied")} — ${result.command}`);
+                    } catch {
+                      say(t("terminalFallback", { message: reason }), true);
+                    }
+                  },
+                });
+                close();
+                return;
+              }
               const label = SPAWNABLE.find((entry) => entry.id === agent)?.label ?? agent;
               say(t("started", { agent: label }));
             }
@@ -2473,7 +3524,7 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog };
+      return { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog };
     }
 
     /**
@@ -2808,7 +3859,26 @@ window.__ModuleLoader__.load({
       const t = ctx.locale.bind(NS);
 
       // `uiWorkspace` is optional: without it, DSH sessions simply cannot be reopened.
-      const faces = { uiWorkspace: () => null, workspaces: () => null };
+      const faces = { uiWorkspace: () => null, workspaces: () => null, sidebarRight: () => null, webTerminals: () => null };
+
+      /**
+       * The two faces a remote session is opened through.
+       *
+       * Both optional: without them a remote session still opens, in a window the
+       * Host launches instead of in this window's own terminal tab.
+       */
+      for (const name of ["sidebarRight", "webTerminals"]) {
+        ctx.inject([name], (scoped) => {
+          const read = () => scoped[name] ?? null;
+          faces[name] = read;
+          scoped.effect(() => {
+            faces[name] = read;
+            return () => {
+              faces[name] = () => null;
+            };
+          }, `dsh-session-hub: ${name} face`);
+        });
+      }
       ctx.inject(["uiWorkspace"], (scoped) => {
         const read = () => scoped.uiWorkspace ?? null;
         faces.uiWorkspace = read;
@@ -2833,7 +3903,7 @@ window.__ModuleLoader__.load({
         }, "dsh-session-hub: workspaces face");
       });
 
-      const { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog } = makeHub(ctx, t, faces);
+      const { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog } = makeHub(ctx, t, faces);
 
       // Frame-wide entry + overlay.
       ctx.slots.inject("sidebar.footer.action", () =>
@@ -2856,6 +3926,18 @@ window.__ModuleLoader__.load({
 
       ctx.slots.inject("shell.overlay", () =>
         ctx.slots.register({ name: "shell.overlay", id: "session-hub-preview", order: 23, locale: NS }, PreviewDialog),
+      );
+
+      // The config editor sits above everything else: it can be opened from the
+      // panel or from the sidebar tab, and it is the one seat that writes.
+      ctx.slots.inject("shell.overlay", () =>
+        ctx.slots.register({ name: "shell.overlay", id: "session-hub-config", order: 24, locale: NS }, ConfigDialog),
+      );
+
+      // The machine manager. Reachable while an environment is unreachable, by
+      // design: it is how you get out of one.
+      ctx.slots.inject("shell.overlay", () =>
+        ctx.slots.register({ name: "shell.overlay", id: "session-hub-hosts", order: 25, locale: NS }, HostsDialog),
       );
 
       // The dock bridge that hands the overlay the live composer's actions.

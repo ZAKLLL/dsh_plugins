@@ -1,11 +1,12 @@
 # dsh-session-hub · Agents 会话管理
 
-把**本机所有 coding agent 的会话**汇总到一个面板里——DSH、Claude Code、Codex、Gemini CLI、pi、opencode——跨全部项目收集，然后：
+把**所有 coding agent 的会话**汇总到一个面板里——DSH、Claude Code、Codex、Gemini CLI、pi、opencode——跨全部项目收集。默认看本机，**也可以一键切到另一台机器**：同一个 adapter 层，字节改从 SSH 取。然后：
 
 - **拖进输入框**：把那个会话的完整历史作为文件交给当前 agent，让它自己解析、接着推进。
 - **「在此续接」**：把历史物化到当前工作区，并把引用写进当前草稿（等价、更省事的路径）。
 - **「在 cmux 继续」/「在 DSH 打开」**：非 DSH 会话用 `cmux new-workspace` 按它自己的 resume 命令唤起；DSH 会话直接在 DSH 里打开。
 - **按项目分组、可收起**；**运行中的会话有实时绿点**。
+- **配置文件**：每个 agent 自己的配置（`settings.json` / `config.toml` / `.credentials.yaml` …）就地读、就地改，本机和远端同一套。
 
 面向的场景是：**你同时用多个 agent、跨很多项目干活，会话散落在各家的私有目录里**。这个插件负责收集与归一，至于「这个历史该怎么读、怎么接」——交给 agent 自己判断。
 
@@ -36,15 +37,295 @@ sources/
 | `list` / `full` / `preview` / `remove` | **不是「一堆文件」的源**自己答全套 | opencode |
 | `storeKind` | `"jsonl"`（可按字节偏移增量读）/ `"frames"`（zstd 帧，只能整份解码）/ `null` | dsh 是 frames |
 | `readPreview` | 把 store 尾部折成实时预览的 IN / OUT | 6 家 |
-| `readStoreEvent` | 把 store 事件折成 token 总量与等待集合 | claude / codex / pi / dsh |
+| `readStoreEvent` | 把一个 store 事件折进累积状态：token 总量、**按模型分列的用量**、等待中的审批与工具调用 | claude / codex / gemini / pi / dsh |
+| `openPlan` | 唤起这个会话的**有序**方案（`{kind:"app",url}` → `{kind:"terminal"}`）。宿主只执行「传输」，顺序由 adapter 说了算 | 只有 codex 需要声明（先桌面端深链、再终端）；不写就是 `[terminal]` |
+| `hydrate` | 需要**第二份文件**的方言：每次扫描、每次 `full` 重读之前先调一次（幂等且便宜） | codex 的 `session_index.jsonl`、gemini 的 `.project_root` |
 | `deletePlan` | 删什么、是否目录、删完还要做什么 | dsh 删整个目录；codex 还要摘索引 |
 | `liveness` | 存活从哪来：`"registry"`（进程内注册表）还是 `"process"`（进程表） | dsh 是 registry |
 | `clientOwned` | 打开会话由客户端负责，而不是拉起终端 | dsh |
 | `spawnCommand` | 起新会话的命令；`null` = 本插件起不了 | dsh 是 null |
+| `configFiles` | 这个 agent 的配置文件有哪些（路径从 `home()`/`dshHome()` 推，所以自动跟着环境走） | 6 家都有 |
 
 **加一个 agent = 新增一个 `sources/<agent>.js` 并在 `SOURCES` 里登记一行**，不需要改 `index.js` 的任何逻辑。
 
-> 这次重构是分两步做的，因为「接口没接好」的错误很容易被静默吞掉：第一步抽出 `shared.js`（15 个方言无关助手，index.js 净减 176 行），第二步搬 6 个 adapter 并把 index.js 的去分支化做完（2694 → 1574 行）。第二步真的踩到了这个坑——`sources/codex.js` 用了 `readFileSync` 却没导入，而它的 `try/catch` 把 `ReferenceError` 吞了，表现只是「标题静默回落成 (untitled)」。为此加了一个**静态检查**：把每个模块用到的函数名与它的导入清单比对，专门抓这类遗漏。
+> 这次重构是分两步做的，因为「接口没接好」的错误很容易被静默吞掉：第一步抽出 `shared.js`（15 个方言无关助手，index.js 净减 176 行），第二步搬 6 个 adapter 并把 index.js 的去分支化做完（2694 → 1574 行）。第二步真的踩到了这个坑——`sources/codex.js` 用了 `readFileSync` 却没导入，而它的 `try/catch` 把 `ReferenceError` 吞了，表现只是「标题静默回落成 (untitled)」。为此加了 `test/imports.mjs`：把每个模块用到的名字与它的导入清单比对，**两个方向都查**——用了没导入（就是上面这个坑）、以及导入了没用（三个 adapter 在读取搬进引擎后仍然整条导入 `node:fs/promises`，而「看起来会碰文件系统」的 adapter 正是后来两个远端 bug 藏身的地方）。它先把注释和字面量剥掉再分析：不这么做，每一句 JSDoc 里的 `@property {() => …} readTail` 都会被读成一次「调用了未定义的函数」。
+
+---
+
+## 环境切换：同一套 adapter，换一台机器
+
+面板顶端有一排环境 chip（**只有配了远端才会出现**，一个选项的开关只是家具）。点一下就换台机器：会话列表、实时预览、阅读器、删除、配置文件全部跟着走，并且**选择记在宿主侧**（`~/.dsh/session-hub/environment.json`），所以换个浏览器、开个新标签页，还是上次那台。
+
+### 机器只声明一次
+
+**装了 `dsh-remote-agent` 的话，机器的清单在它那里，不在这里。** 那个插件的 `hosts` 才是「有哪些远端机器」的定义——它本来就带着每台的 alias、label 和远端 `dshHome`，而且它还需要 bin/port/profile 来启动东西。这个插件把这些机器**读进来**，变成自己的环境：
+
+```js
+// dsh-remote-agent
+ctx.provide("remoteHosts", { list: () => hosts.map((h) => ({ alias, label, dshHome })) });
+
+// dsh-session-hub
+const service = typeof ctx.get === "function" ? ctx.get("remoteHosts") : undefined;
+```
+
+所以这个插件的 `cordis.patch.yml` **不再声明 `environments`**——同一个 alias 写两遍就是两边迟早不一致。加一台机器只需要在一个地方加。
+
+两个细节是刻意的：
+
+- **用 `ctx.get` 而不是 `inject`**。把 `remoteHosts` 写成硬依赖，会让这个插件在「没装 remote-agent」的组合里**拒绝激活**——为了一个可选的机器列表付这个代价太重。这和 keep-alive 问 timer 用的是同一个姿势（Cordis 里读未注入的服务属性会抛，`ctx.get` 是唯一正确的「有没有」问法）。
+- **目录每次请求重算，不在激活时冻结**。两个来源不是一起到的：`remoteHosts` 由另一个插件的 fiber 发布，早读一次就会永远少几台机器。这也是为什么「记住的那台」在解析前先重算目录——否则一个只有 remote-agent 知道的 id 会被静默解析成 `local`。
+
+`environments` 仍然支持，作为**独立运行**的路径（没装 remote-agent 时也能说「那台机器」），并且**同名时以它为准**：写下来的那条是刻意的修正（比如探针把 `home` 探错了），不是重复。
+
+配置写在这个插件自己的 `cordis.patch.yml` 里（**仅在没装 remote-agent、或要覆盖某台机器时**）：
+
+```yaml
+- insert:
+    - id: session-hub
+      name: dsh-session-hub
+      config:
+        environments:
+          - id: pro14uu
+            alias: pro14uu        # ~/.ssh/config 里的 Host，原样交给 ssh
+            label: pro14
+            home: /home/zakl      # 可选；不写就 ssh 过去问
+            dshHome: /home/zakl/.dsh
+```
+
+### 机器管理：从面板里加机器
+
+环境条上有「⚙ 机器」（右侧栏的工具条里也有一个），打开的是一个机器列表。**它必须在还没配任何远端时就可达**——一个只在已有机器时才出现的切换器，没法用来加第一台。
+
+每一行都标**来源**，这是这个界面最重要的一个字段：
+
+| 来源 | 是什么 | 能做的事 |
+| --- | --- | --- |
+| 来自 `~/.ssh/config` | 你这台机器的 ssh 已经认识的别名，带 HostName / User / Port | 启用 / 停用 / 测试 / 编辑显示名与远端 home |
+| 来自 remote-agent | 另一个插件 `ctx.provide("remoteHosts")` 发布的机器 | 同上 |
+| 在这里添加 | 面板自己记的（`~/.dsh/session-hub/environment.json`） | 同上，外加「忘记」 |
+| 来自插件配置 | `cordis.patch.yml` 里的 `environments` | 同上 |
+
+不标来源的话，「忘记」在一个由文件拥有的别名上什么也不会发生——看起来就是坏的。
+
+读 `~/.ssh/config` 而不是让你重新敲一遍别名，是因为**你平时 `ssh` 用的那些别名正是你想切过去的机器**，而那个文件里已经有 HostName / User / Port。通配符（`Host *`）和取反（`Host !x`）**不是机器**：把 `*` 当成切换目标会造出一个名字是通配符的环境。`Include` 不跟进——一个别名只存在于被 include 的文件里，照样可以手输。
+
+两个刻意的取舍：
+
+- **不在界面上改 `~/.ssh/config`。** 那个文件是你的；这个插件只读它，并且把路径显示出来。要加一台 ssh 还不认识的机器，就在面板里加，它进的是本插件自己的状态文件。
+- **停用一台机器是「隐藏」，不是「删除」。** `enabled: false` 在合并的最后一步做减法，**不管它是谁声明的**——否则那个开关只对没人提过的机器有效。而在 afternoon 你正在看的那台机器上关掉它，**会把你送回本机**，因为停在一台已经不在目录里的机器上，正是切换器要防的那种状态。
+
+状态文件是 `{version: 2, active, hosts}`。**version 1（只有 `active`）仍然能读**——已经选过机器的人不该因为插件学会了多记一件事而丢掉那个选择。切换机器和添加机器是同一个文件的两次写入，所以 `writeActiveId` 是**读-改-写**，不是覆盖。
+
+`hosts` 这个 op 是**唯一不设可达性护栏**的：它正是你从一台连不上的机器里出来的路，所以必须在那个时候能用。它不读任何会话存储——只读 `~/.ssh/config`、本插件自己的状态文件，和 `remoteHosts` 服务。
+
+### 为什么「加一个 remote 模式」不需要动 adapter
+
+这一点是设计出来的，不是碰巧：**六个 adapter 是纯的**——`build(file, stats, events, truncated)` 拿的是**已经解析好的事件**，`readPreview(event, state)` / `readStoreEvent(event, state)` 折的也是事件。没有任何一个 adapter 直接读字节。
+
+所以「换一台机器」只是换掉两个能力，而「用哪台机器」本身是一个对象：
+
+```
+store.js   ← 字节：localStore / createRemoteStore
+host.js    ← 命令：localHost / createRemoteHost（它带着 store，所以「一台机器」是一个整体）
+```
+
+| 换什么 | 换在哪 | 为什么够 |
+| --- | --- | --- |
+| **字节从哪来** | `store.js`：`localStore` ↔ `createRemoteStore` | 引擎要的只是 `walk / stat / readHead / readAt / readTail / readFile / remove / writeText / move` |
+| **命令在哪跑** | `host.js`：`exec(script)` | 进程表、cwd，以及任何「问对面一句」都走这里——本机是 `/bin/sh -c`，远端是 `ssh host sh -c` |
+| **`home()` / `dshHome()` 指哪** | `shared.js` 的一个模块级 scope | 每个 adapter 的 `root()` 和 `configFiles()` 都是从这两个推的，「对面的 `~/.claude/projects` 在哪」一个函数就答完了 |
+| **哪些是「本机的事」** | 明确留成本机 | pins、hook spool、`code` CLI、transcript 落盘目录，以及**开窗口**——见下 |
+
+```
+store.js          # 字节从哪来：localStore + createRemoteStore
+host.js           # 这台机器能做什么：exec / invocation / processes / cwdOf
+ssh.js            # ssh 怎么拼：shq() 引号、Buffer 不解码、连接复用、bracketed() 探针哨兵
+environments.js   # 有哪些环境、探活、记住选了哪个、以及用户自己加的机器
+```
+
+迁移是**可证伪**的：`cachedCards()` 是同一套「按前缀大小分轮、每轮批量取」的算法，本机和远端走同一条路径，只是 round trip 数不同。所以本地清单必须与重构前**逐字节一致**——`smoke` / `preview` / `render` 三个老测试原样全绿，就是这一步的证据。
+
+### 「本机 / 远端」其实是两个问题，不是两个实现
+
+抽象到这里会撞上一个诱惑：把「打开会话」也塞进 `host.launch()`。**那是错的**，而且错得隐蔽：
+
+- **跑一条命令**是**关于对面**的。`ps` 打的是对面的进程表，`cd` 进的是对面的目录。这个必须有远端实现。
+- **开一个窗口**永远**是关于这台机器**的。cmux 工作区、Terminal.app、VS Code、桌面深链——对面没有这些东西。变的只是**窗口里承载的那条命令**。
+
+所以 host 只回答「那条命令长什么样、窗口该从哪个目录起」：
+
+```js
+// 本机：命令就是命令，窗口开在项目目录里
+{ cwd: "/Users/zakl/proj/x", command: "codex resume <id>" }
+
+// 远端：窗口开在本机 home，命令是一整条 ssh
+{ cwd: "/Users/zakl", command: `ssh -t 'pro14uu' 'exec "$SHELL" -lic "cd … && exec codex resume <id>"'` }
+```
+
+开窗口本身仍然在 `index.js`（`launchInTerminal`），因为它是这条链上**唯一不可能远端**的一环。
+
+`invocation()` 里两件事都必须发生在对面，而且都曾经是「照直觉写就会错」的坑：**`cd`**（会话记录的 `cwd` 是对面的路径，在本机拿它跑 resume，要么失败，要么更糟——成功进了一个恰好同名的本地目录）和**登录 shell**（`claude` 在 `~/.bun/bin`，只有交互式 rc 会把它放进 `PATH`；非交互式 shell 里它是 "command not found"，读起来像「那台机器没装这个 agent」）。
+
+## 远端不能慢：三次测量改掉的三件事
+
+第一版在真机上跑一次 list：**冷 47 秒，热 17 秒**。三个独立的浪费，每个都量过：
+
+| 改什么 | 之前 | 之后 | 为什么 |
+| --- | --- | --- | --- |
+| **ssh 连接复用**（`ControlMaster` + `%C` + `ControlPersist=60`） | 1.34s / 次 | **0.24s / 次** | 每次 `ssh` 都重新握手 + 认证。一次扫描要问二十几个问题，这一项就是 47 秒里的绝大部分 |
+| **一次扫描的 stat 只取一次** | 每张卡一次 ssh `stat` | 0 次 | 批量 `statMany` 已经取回了整批，之后再逐卡问一遍等于把它扔掉 |
+| **六个源并发取** | 顺序 6 次 `find` | 一波 | 它们本来就互不依赖。`mapLimit` 保持面板里 agent 的顺序，并让一个坏掉的存储变成「少一个源」而不是「整次扫描失败」 |
+
+实测（对 `215`，18 条会话）：**冷 47.3s → 5.3s，热 16.9s → 2.0s**；本机热扫描 1.6s。剩下的差距就是两台机器之间的距离。
+
+> 连接复用放在 `ssh.js`，因为那是**唯一**一个所有 ssh 调用都经过的地方。socket 用 `%C`（ssh 自己算的 local/remote/port/user 哈希），放在 `/tmp` 而不是 `~/.ssh`——这个插件没有理由往用户自己打理的目录里塞文件。
+
+## 远端也有绿点：liveness 真的过去了
+
+在这之前，存活判断来自**本机**的进程表和 cmux 的记录——所以远端会话**永远不可能**被看成「在跑」。现在 `scanAgentProcesses()` 问的是当前环境：
+
+```js
+for (const row of await host().processes()) { … }   // 本机 ps / 远端 ssh ps
+```
+
+`ps -eo pid=,etime=,args=` 在 macOS 和 Linux 上输出**同样的三个字段**（`etime` 也都是 `MM:SS` / `HH:MM:SS` / `DD-HH:MM:SS`），所以这里没有平台分支。cwd 也一样：Linux 先读 `/proc/<pid>/cwd`，其他回落到 `lsof`——**用 `[ -d /proc/self ]` 判断有没有 `/proc`，而不是 `[ -e /proc/<pid>/cwd ]`**，后者对普通用户永远是 false，会把每次请求都推去走 `lsof`。
+
+进程缓存按主机 id 记：两张进程表，缓存不说清是哪一张，就会把上一台机器的 agent 显示成这一台的「正在运行」。
+
+实测（在 `215` 上起一个名字叫 `codex`、并声明一个真实会话 id 的进程）：远端 list 报 `runningCount: 1`、pid 正确。那条进程是 **shebang 形态**（`/bin/sh /tmp/codex resume <id>`），正好走「可执行名是 `sh`，要看**第一个参数**」那条路。同一台机器上**别人的** codex 进程没有被认领——它们的 cwd 对不上任何会话。
+
+**这对删除意味着什么**：以前远端删除只能一刀切地要求确认（查不到「还在跑」）。现在能查了，判断变精确：**看见它在跑** → 和本机一样 `code: "running"`；**没看见** → 仍是 `liveness-unknown`，因为远端的 liveness 更弱（只有「进程报了自己的会话 id」或「cwd 对得上」才匹配得到）。**「没看见」不等于「没在跑」**，所以那句确认仍然必要。
+
+### 「打开」在远端是什么意思
+
+adapter 只说**用什么命令续接它的方言**；「打开」这个动作由宿主按环境翻译：
+
+| | 本机 | 远端 |
+| --- | --- | --- |
+| 终端 | 直接跑 `codex resume <id>` | `ssh -t <alias> 'exec "$SHELL" -lic "cd <远端 cwd> && exec codex resume <id>"'` |
+| 新建会话 | 在项目目录里跑 `codex` | 同理，`cd` 到**对面**的项目目录 |
+| 桌面深链 / cmux 聚焦 | 走 adapter 的 `openPlan` | **跳过** —— 两者都是「跑在**这里**的 app」，把远端 session id 喂给本地深链只会打开错的、或者什么都不打开 |
+| DSH 会话 | 交给本机的工作区注册表 | **拒绝**，并说明它属于对面那台机器自己的 DSH |
+
+两件事必须发生在对面，而且都曾经是「照直觉写就会错」的坑：
+
+- **`cd`**：会话记录的 `cwd` 是**对面**的路径。在本机拿远端 cwd 跑 resume，要么失败，要么更糟——成功进了一个恰好同名的本地目录。
+- **登录 shell**：agent 二进制要用**交互式** shell 去找。`claude` 在 `~/.bun/bin`，只有登录 rc 会把它放进 `PATH`；非交互式 shell 里它是 "command not found"，读起来像「那台机器没装这个 agent」。`dsh-remote-agent` 的 README 记的是同一个坑，这里是同一个 `$SHELL -lic`。
+
+这条链唯一的风险是**引号**，而引号对不对是读不出来的——所以 `test/remote.mjs` 把生成的字符串**交给真的 `sh`**，让假 `ssh` 报告它到底收到了什么：必须是三个参数，第二个是 alias，第三个是**一整个**远端命令（含带空格的 cwd、嵌套的 `$SHELL -lic`）。要验的正是「手工拼命令」最容易错的地方。
+
+### 三件必须做对的事
+
+**1. 一次性取回来，不是每个文件一次 ssh。** 几千条 rollout 每文件一次 `ssh` 就是几千次 round trip，是分钟级。所以 store 暴露两个可选的批量方法：`statMany(paths)` 和 `readHeads(requests)`（NUL 分隔的记录，内容 base64）。`cachedCards()` 先一次 stat 全体，再**按前缀大小分轮**批量读：第一轮把 `start` 字节发给所有还没解析出信号的文件，只有需要更长前缀的才进入下一轮。一轮一次 ssh。
+
+**2. 「连不上」和「没有会话」必须长得不一样。** 这是切换器存在的**全部理由**。选中一台连不上的机器时，宿主直接拒绝所有读存储的 op：
+
+```json
+{"ok": false, "error": "Connection timed out during banner exchange",
+ "environment": {"id": "pro14uu", "reachable": false}}
+```
+
+**没有 `sessions` 字段**。绝不会把本机的 351 条会话端上去冒充远端；也不会因为读不到就回落成本机。UI 上是一条横幅：哪台连不上、ssh 原话是什么、一个「切回本机」和一个「重试」。
+
+远端探活天然比本机弱：远端是「ssh 过去 `printf $HOME` 有没有回话」，本机是「就是这台」。所以探活只回答「读不到吗」，进程表/liveness 的语义差异在远端仍然存在。
+
+**3. 探针的输出不能被 rc 噪声污染。** 交互式 rc 会打印 motd、版本管理器横幅、`git status`。探针脚本用两个相同哨兵把真正的负载夹在中间，只读中间那段：
+
+```sh
+printf '\n%s\n' '__dsh_session_hub__'; ( <脚本> ); printf '\n%s\n' '__dsh_session_hub__'
+```
+
+**那个子 shell 不是装饰**。探针脚本末尾有 `exit 0`（某个 agent 的存储不存在时不让整条 ssh 非零退出），而裸的 `exit` 会在**打印收尾哨兵之前**结束 shell——一个完全正常的回答就变成了「no output」。这个 bug 真的发生过，是 `test/remote.mjs` 抓出来的。
+
+### 远端读的是字节，解析仍在本地
+
+对面**什么都不用装**。远端只跑 `find` / `stat` / `head` / `tail` / `cat` / `rm` / `base64`——都是 POSIX 工具，不需要 node、不需要装一遍 session-hub、不需要对面有 `dsh`。方言知识（zstd 多帧、codex 的 `session_id` vs `id`、gemini 的 `$set` 补丁流）一行都没有离开本机。
+
+两个已知边界：
+
+- `stat -c '%s|%y|%w'` 是 GNU 形式（`%y` 带纳秒）。远端按 Linux 假设；macOS 上 `test/remote.mjs` 用一个 `stat` shim 翻译。用 `%Y`（整秒）会让 `mtimeMs:size` 这个缓存戳在同一秒内的两次追加上看不出变化。
+- 远端 liveness 天然更弱：本机是进程内注册表 / 进程表，远端只能是「ssh 过去 `printf $HOME` 有没有回话」。
+
+### 远端删除：查不到「还在跑」就必须要一句明确的话
+
+本机的删除有三条护栏，其中一条是「这个 agent 还在跑，不许删」。**这条护栏在远端根本不可能生效**：liveness 来自本机的进程表和 cmux 的记录，两者都看不见对面的进程。放着不管的结果最糟——卡片看起来是空闲的、删除成功、一个还在跑的 agent 的日志没了，而且**没有任何地方会提醒你**。
+
+所以远端删除分两种情况：
+
+- **查得到它在跑**（进程报了会话 id，或 cwd 对得上）→ 和本机一样 `code: "running"`，一句「还在运行」，不绕弯子；
+- **查不到** → `code: "liveness-unknown"`，指名哪台机器，拿到明确的「我知道」（`force: true`）才放行。
+
+区分这两者是刻意的：**「没看见」不等于「没在跑」**，但如果连「看见了」都还含糊其辞，用户就学不到该信什么。
+
+`delete-many` 是这里最容易漏的地方：它的循环对每个 key 都传 `force`（运行中的那些已经在上面被过滤掉了），所以**逐会话的检查永远不会被走到**，整批会直接穿过去。因此这条拒绝写在批量入口，而不是指望下面的循环。
+
+客户端的删除弹窗在远端环境下**先要求勾选**才让按钮可用——「拒绝之后再告诉你为什么」是更差的告知方式。
+
+`test/remote.mjs` 两条都钉住了，而且是**真的删掉远端文件**：拒绝时不带 `deleted` 字段（证明循环没跑）、放行时 `target` 是远端路径、文件确实消失、**对面的 `session_index.jsonl` 也通过同一个 store 被摘干净了**。把批量那道守卫删掉，测试立刻变红。
+
+
+
+### 字节谁读：`frames` 存储的特殊那条
+
+JSONL 存储是**可按下标读**的，所以引擎读前缀、解析事件、把事件交给 adapter。DSH 的存储是 zstd 帧串联，**不可按字节定位**，所以根本没有「前缀」这回事——它必须整份读。
+
+第一版里这个「整份读」是 **adapter 自己做的**，用 `node:fs`。于是它成了唯一一个绕过 store 的读，而且 `buildDsh` 还是 `async`——**六个 adapter 里唯一违反「`build` 同步」契约的那个**。后果在远端很具体：读的是本机路径，抛 ENOENT，然后那条会话**从清单里静默消失**。不是报错，是「对面的 DSH 没有会话」——正是这个插件最不该犯的那类错。
+
+现在的分工是明确的：**引擎读字节，adapter 只解码**。
+
+```js
+// index.js
+if (source.storeKind === "frames") {
+  return source.build(file, stats, await store().readFile(file));   // ← 走活动 store
+}
+```
+
+所以 `build` 的第三个参数有两种含义（契约里写清了）：可前缀读的方言拿到**已解析事件**，`frames` 方言拿到**整份 `Buffer`**。`buildDsh` 因此也变回了**同步**函数。
+
+`test/remote.mjs` 里那条 DSH fixture 是**两帧**的 zstd（单帧会被普通的 `zstdDecompressSync` 解出来，看不出差别），而且只存在于合成的远端 home 里。**把这段分支临时删掉，测试立刻从 5 条会话变成 4 条**——这条 bug 是本机任何 fixture 都抓不到的，因为本机的路径恰好是对的。
+
+### 需要第二份文件的方言：`hydrate`
+
+Codex 的线程名在它自己的索引里（`~/.codex/session_index.jsonl`），Gemini 的项目根镜像在 `.project_root` 里。`build` 按契约是**同步**的，所以这些读不能发生在它内部；而直接 `node:fs` 读会在面板指向另一台机器时读**本机**——远端每一行 Codex 都会变成 `(untitled)`。
+
+所以契约里有一个预热钩子：
+
+```js
+// sources/codex.js
+async function hydrateCodex({ store }) { /* 通过活动 store 读索引，进模块级缓存 */ }
+
+export default defineAdapter({
+  hydrate: hydrateCodex,   // 每次扫描、以及每次 full 重读之前调用一次
+  build: buildCodex,       // 同步，只查缓存
+});
+```
+
+`hydrate` 拿到的是**和其他所有读同一个 store**，所以它自动跟着环境走。它是**幂等且便宜**的：Codex 的索引按 mtime + size 失效，Gemini 的 `.project_root` 用 5 秒 TTL——本地（逐文件）路径会给每个会话调一次，不能在每次调用时重读两个文件。
+
+`test/remote.mjs` 用**能区分真假**的 fixture 钉住它：远端索引里的线程名刻意不同于 rollout 首条消息的兜底标题，`.project_root` 刻意不同于目录名——所以「读了本机」和「读了对面」不可能同时通过。
+
+---
+
+## 配置文件：就地读写每个 agent 自己的配置
+
+面板头部（或右侧栏）点「配置」，列出每个 agent **自己声明的**配置文件，带存在性与大小；点开就地编辑、保存。远端环境下路径自动指向对面的 `~/.claude/settings.json`——因为 adapter 的 `configFiles()` 和 `root()` 一样从 `home()` 推。
+
+```js
+// sources/claude.js
+configFiles: () => [
+  { path: join(home(), ".claude", "settings.json"), label: "settings.json", language: "json", creatable: true },
+  { path: join(home(), ".claude", "CLAUDE.md"),     label: "CLAUDE.md",     language: "markdown", creatable: true },
+],
+```
+
+两条护栏：
+
+- **路径围栏**：读/写只接受 adapter 声明的**整条路径**（不是前缀，不做路径解析）。一个接受浏览器传来的路径的查看器，等于在这台机器上、并且在切到环境后**在另一台机器上**开了任意文件读写。声明的路径之外一律拒绝。
+- **先备份**：写之前把旧内容拷到 `<path>.dsh-session-hub.bak`。这是别人真实的配置，编辑器一旦发出请求就没有撤销。备份路径在响应里返回并显示出来。
+
+`.` 开头带凭据的文件（`.credentials.yaml`）标 `sensitive: true`：**打开它不会显示内容**，要再点一次「显示」。面板被打开不等于密钥上屏。
+
+创建也支持：`creatable: true` 的文件不存在时可以直接编辑并保存，父目录会被创建（`~/.config/opencode/opencode.json` 通常就还没被创建过）。
 
 ---
 
@@ -147,7 +428,30 @@ sources/
 
 **为什么 DSH 不走同一条路**：它没有命令行入口，会话是由工作区创建的。把两者混成一个「spawn」概念会在任一侧失真——所以 `spawn` 这个宿主操作**明确拒绝 DSH**，由客户端自己处理。
 
-**＋ 只在「按项目」分组时出现**：按 agent 分组时没有「项目」可谈，那个控件就不渲染（渲染测试里断言了项目表头恰好三个控件）。
+**＋ 只在「按项目」分组时出现**：按 agent 分组时没有「项目」可谈，那个控件就不渲染（渲染测试里断言了项目表头恰好四个控件）。
+
+---
+
+## 用 VS Code 打开项目
+
+项目表头的 **`<>`** 把该项目目录交给 VS Code：宿主跑 `code <目录>`。
+
+**刻意不走终端**（不像启动 agent 那样）：`code` 会把路径交给**已经打开的窗口**，走终端只会在它后面留一个白开的 shell。
+
+CLI 定位是 **PATH 优先**，再依次退回 `/usr/local/bin/code`、`/opt/homebrew/bin/code`、app bundle 内的路径——**从 Finder 启动的宿主不继承登录 shell 的 PATH**，只查 PATH 会漏。相对路径直接拒绝；CLI 找不到时如实报错，不静默失败，也不假装成功。
+
+---
+
+## 引用到会话
+
+会话行右侧的 **@** 把这条会话插进当前输入框：
+
+| 情况 | 插进去的是什么 |
+| --- | --- |
+| **DSH 会话** | 走 DSH 原生的 mention 服务（`sessionReferenceResolver`，签名已核实），是**真正的会话引用**，不是一段文本 |
+| 其余 agent | 按 DSH 自己的 mention 语法（`formatFileMention`，逐字符对齐）补一个 `@<原始会话文件路径>` |
+
+**能拿到原始会话文件就给文件**——那是 adapter 的 `sessionFile` 契约（见「结构」一节），拿不到就退化成文字，并在返回值里说明是哪一种（`kind` 为 `mention` / `file` / `none`）。
 
 ---
 
@@ -376,6 +680,32 @@ openPlan: (card) => [
 
 只取 `reading.model`，**丢弃**尾部读出来的 token 数：没有前面的历史，那些数字没有意义（Codex 的分桶是靠相邻累计值的差算出来的），不能当作会话用量显示。
 
+### 按模型分列的用量
+
+不记「最后一个模型」，而是**每个出现过的模型各记一份用量**——会话中途换模型是常事，只留最后一个会让整段对话看起来都跑在它上面。`reading.models` 是「模型 → 用量」，宿主用 `models` op 回答它，`preview` 与 `messages` 也带出来，所以实时详情面板和阅读器都不需要额外请求。
+
+**分桶放在共享的 `accumulate` 里**：累加会话总量的同一趟顺手按当前模型分桶，一次遍历两个答案，代价为零。
+
+| agent | 模型从哪来 | 用量从哪来 |
+| --- | --- | --- |
+| claude | assistant 消息的 `message.model`（**与 usage 同一条消息**） | 同一条消息的 `message.usage` |
+| pi | `model_change` 的 `provider` + `modelId` | assistant 消息的 `message.usage` |
+| gemini | `type:"gemini"` 事件的 `model`（与该轮 tokens 同一条） | 同一事件的 `tokens`——它的 `input` 是**当轮发出的整个上下文**，随对话增长（实测 11,947 → 12,638 → 12,924），所以逐轮相加才是总量 |
+| codex | 事件的 `payload.model`（`session_meta` 只有 `model_provider: "custom"`） | `event_msg/token_count`，**是运行总量，不是每轮增量** |
+| dsh | `request/header` 的 `data.header.config` | 无，见下 |
+
+**Codex 那个累计值是这里唯一的陷阱**：把「运行总量」归给当前模型，会把**之前所有模型的用量算到最后一个头上**。所以它的分桶取**相邻两次的差**，并把差值归给两次之间生效的模型。
+
+**一条不变量，测试守着**：各模型桶之和必须等于会话总量。它正是抓出下面这个 bug 的检查。
+
+> `total` 不能自己把四项加出来。Codex 的 `cached_input_tokens` **已经包含在** `input_tokens` 里，四项相加会把缓存算两遍：实测 33,472,212 对权威的 16,773,939。现在 `total` 优先用方言自己给的数字，没有才退回相加。
+>
+> 为什么这个 bug 差点漏掉：早先「claude 分桶与总量完全一致」的验证是**循环论证**——claude 没有源 total，比的是「我自己算的和」与「我自己算的和」。是 Codex 那个权威 total 让它现形。
+
+**Codex 的深链只有一半是证实的**：`codex://` 这个 scheme 由桌面端（`/Applications/ChatGPT.app`，bundle id `com.openai.codex`）注册，app-server 协议里也有 `thread/resume`，但**只有 `codex://threads/new` 被证实**是这个 CLI 构造的；`codex://threads/<id>` 是**推断**。第一次实测它确实拉起了桌面端，但「落在哪条会话上」只有人能看出来——所以它是计划的**第一步**而不是唯一一步，没被处理就落到终端。
+
+**DSH 的用量通道存在但没有数据**：`assistant/attempt` 的流里确实有 `usage` chunk，但本机**全部为 0**（provider 不上报），而且从零值反推不出它是每轮还是累计。**所以不取数**——宁可不显示，也不显示一个没有任何东西测量过的数字。代码注释里写明了这个判断。
+
 ### 正文按 markdown 渲染
 
 转录是文章：代码块、列表、强调、表格是 agent 说话的**形状**，把星号原样显示出来是不可读的。
@@ -506,7 +836,7 @@ DSH 会话不走 cmux——它本来就在 DSH 里，客户端直接 `uiWorkspac
 
 1. 打开任一个入口，面板内容一致：**按项目分组的紧凑清单**（点分组标题收起/展开）、按 agent 筛选、全字段搜索、**只看运行中**。
 2. **项目表头显示该项目最近一次交互的时间**，取该项目下**所有会话 `updatedAt` 的最大值**——所以项目即使收起，也一眼看得出有多新。悬停能看到精确到秒的绝对时间。
-3. **项目表头悬停时出现三个控件**：**＋ 新建会话**、📌 置顶该项目、🗑 删除该项目全部会话。
+3. **项目表头悬停时出现四个控件**：**`<>` 用 VS Code 打开**、**＋ 新建会话**、📌 置顶该项目、🗑 删除该项目全部会话。
 4. **打开时只有最上面那个项目是展开的，其余全部收起**——几十个项目一次性铺开会淹没一切。每个展开的分组默认只显示最新修改的 10 条顶层会话，底部一条「查看更多 · 剩余数」每次再放 10 条，全展开后变成「收起」。收起/展开的选择是**每个分组模式各记一次**，不会在你刚点开一个之后又被自动重置。
 5. **子代理会话收在父会话下面，是一棵树**，不再平铺：
 
@@ -548,6 +878,10 @@ DSH 的会话头里有 `parentSession`、`origin: "subagent"`、`delegationDepth
 
 行高 32px、圆角 `--dsw-radius-md`、悬停 `--dsw-alias-interactive-bg-hover`、标题 14px/20px、时间 10px 且**悬停时被行操作替换**、项目表头 34px 带文件夹图标——这些数值全部取自 `dsh-client-ui-workspace` 自己的样式表，不是估的。插件不 import 任何 Harness 客户端包，图标是自己画的 inline SVG。
 
+**agent 在行头用一个短色标自报家门**（`claude` / `codex` / `pi` / `dsh`…），悬停看全名。它的颜色是**复用**而不是复制调色板：色标只挂 `sh-agent-dot-<agent>` 这一个类——那个类只设 `background` 与 `color`、**不设尺寸**——所以各 agent 的配色仍然只有一处定义。测试特意断言色标**没有**挂那个尺寸类（挂了就变回圆点），也没挂 `sh-agent-dot` 本身。
+
+> 名字用 agent id 而不是缩写：`cc` 这种两字母代号读起来要靠猜，而 id 本来就短且和 adapter 一一对应。原先那张缩写表在每一项都等于自己的键之后就被删掉了——**多一张表只是又多一处需要跟 adapter 保持同步的东西**。
+
 > 右侧栏 Tab 是**会话作用域**的，框架直接把当前 composer 的 `inputActions` 交给它，所以「在此续接」在那边不需要任何桥。全屏遮罩在 root 作用域，才需要 `conversation.composer.dock` 上那个不渲染的桥来转发。
 
 > 「在此续接」写入的目录是**当前会话自己的工作区**，由宿主按当前 sessionId 反查它的 `cwd` 得到——这样 agent 一定读得到。查不到才退回临时目录，此时提示里给的是绝对路径。
@@ -559,19 +893,25 @@ DSH 的会话头里有 `parentSession`、`origin: "subagent"`、`delegationDepth
 ```
 dsh-session-hub/
 ├── package.json        # dsh.bundle.patch + dsh.client.platform
-├── cordis.patch.yml    # 插入 session-hub 这一行
-├── index.js            # 宿主半边：四个扫描器 + 统一模型 + 实时状态 + 预览 + transcript + 删除 + 置顶 + /api 路由
-├── client.js           # 客户端半边：侧栏入口 / 全屏面板 / 右侧栏 tab（会话·实时）/ 输入框桥 / 删除弹窗
+├── cordis.patch.yml    # 插入 session-hub 这一行（机器清单在 remote-agent 那边，见上）
+├── index.js            # 宿主半边：四个扫描器 + 统一模型 + 实时状态 + 预览 + transcript + 删除 + 置顶 + 配置 + 环境切换 + /api 路由
+├── store.js            # 会话存储的字节从哪来：localStore（本机 fs）/ createRemoteStore（每操作或每批一次 ssh）
+├── host.js             # 一台机器能做什么：exec / invocation / processes / cwdOf（本机与远端两个实现）
+├── ssh.js              # ssh 调用怎么拼：shq() 引号、Buffer 不解码、bracketed() 探针哨兵
+├── environments.js     # 有哪些环境、读 ~/.ssh/config、探活、记住选了哪个和用户加的机器（描述性，不自己装配）
+├── client.js           # 客户端半边：侧栏入口 / 全屏面板 / 右侧栏 tab（会话·实时）/ 输入框桥 / 删除弹窗 / 环境切换条 / 配置编辑器
 ├── hook.mjs            # hook 汇聚入口：任何 agent 追加一行即可注册
 ├── locale/{en,zh}.json # 插件卡片显示文案
 ├── icon.svg
 └── test/
-    ├── render.mjs      # 渲染回归（真实 client.js + 极简 React）
+    ├── render.mjs      # 渲染回归（真实 client.js + 极简 React），含配置编辑器的遮罩→显示→编辑
     ├── reload.mjs      # 热重载替换宿主实现（必须独立进程）
     ├── smoke.mjs       # 宿主半边冒烟测试（读真实会话库）
     ├── delete.mjs      # 删除路径与护栏（自建 fixture，用完即清）
     ├── pins.mjs        # 置顶状态（备份并还原你真实的置顶文件）
-    └── preview.mjs     # 实时预览、hook 汇聚、进程表发现（备份并还原真实的 spool）
+    ├── preview.mjs     # 实时预览、hook 汇聚、进程表发现（备份并还原真实的 spool）
+    ├── environments.mjs # 环境切换、配置围栏与「连不上不冒充空」（DSH_HOME 指向临时目录）
+    └── remote.mjs      # 假 ssh 把「远端」跑在本机：批量读、NUL 分帧、探针哨兵、真·远端清单
 ```
 
 ### 两端怎么通信
@@ -602,6 +942,8 @@ ctx.connection.fetch.register({
 | `shell.overlay` | `session-hub-panel` | 全屏面板 |
 | `shell.overlay` | `session-hub-confirm` | 删除确认弹窗（放这里，右侧栏那种会裁切溢出的容器里塞不下弹窗） |
 | `shell.overlay` | `session-hub-spawn` | 新建会话的 agent 选择器（同上原因） |
+| `shell.overlay` | `session-hub-preview` | 会话阅读器（同上原因） |
+| `shell.overlay` | `session-hub-config` | 配置文件编辑器。**单独一层而不是面板里的一个模式**：改文件要的是宽度，而且要能从右侧栏 tab 直接叫出来 |
 | `sidebar.right.pane.tab` | `dsh-session-hub` | **右侧栏 tab 的 body**——「会话 / 实时」两个模式（会话作用域，自带 `inputActions`） |
 | `sidebar.right.pane.tab.title` | `dsh-session-hub` | 该 tab 的 chip 内容 |
 | `conversation.composer.dock` | `session-hub-bridge` | 会话作用域、不渲染，只把当前 composer 的 `inputActions` 发布给全屏面板 |
@@ -649,13 +991,33 @@ ctx.inject(["sidebarRightTabs"], (scoped) => {
 ## 测试
 
 ```sh
-node test/render.mjs   # 渲染回归：把真实 client.js 在 Node 里渲染一遍
+node test/render.mjs   # 渲染回归：把真实 client.js 在 Node 里渲染一遍（含配置编辑器）
 node test/reload.mjs   # 热重载必须真的换掉宿主实现（两代模块实例共用 globalThis）
 node test/smoke.mjs    # 采集 / 标题 / transcript / 实时状态 / 树的完整性
 node test/delete.mjs   # 删除路径、批量删除与三条护栏
 node test/pins.mjs     # 置顶的读写、两种置顶互不干扰、删除时清理
 node test/preview.mjs  # 实时预览的推导、hook 覆盖、sink 的输入校验，以及「终端里直接起的 agent」能否被进程表发现
+node test/imports.mjs  # 静态导入检查：用了没导入 / 导入了没用（宿主半边全部模块）
+node test/environments.mjs  # 环境目录、ssh 配置解析、机器管理（加/测/隐藏/忘记）、配置围栏与备份、以及「连不上」绝不冒充「没有会话」
+node test/remote.mjs   # 假 ssh 把另一台机器搬到本机：远端存储的每个操作、远端进程表与 cwd、探针哨兵、真·远端清单、一键打开的引号、以及「在跑就不许删」
 ```
+
+### 为什么有 remote 测试
+
+远端那一半平时需要另一台机器在。`test/remote.mjs` **自己造一台**：往 `PATH` 前面放一个假的 `ssh`，它把「远端脚本」在本机执行；再配一个 `stat` shim 把 store 唯一用到的那条 GNU 调用翻译过来。于是最难靠读代码确认的部分——引号、批量、NUL 分帧、base64、探针哨兵——变成 CI 里真的跑起来的东西，而不是「等机器通了再说」。
+
+它最先抓到的就是一个真 bug：探针的 `exit 0` 把收尾哨兵吞了（见上文子 shell 那段）。
+
+然后它再往前一步：把一份**合成的远端 home** 挂到环境切换器后面，断言那份只存在于该目录里的 Claude 会话被列成远端会话、标题解析正确、`cwd` 是远端路径，**并且本机 351 条会话一条都没混进去**。
+
+`test/environments.mjs` 把 `DSH_HOME` 指向临时目录（这样写入测试落在临时文件里，而不是你真实的 `.credentials.yaml`，也不会覆盖你正在用的环境选择），断言：配置目录来自 adapter、`.credentials` 带敏感标记、**围栏逐字匹配整条路径**（前缀相同也要拒）、写之前确实留了旧内容、切到连不上的机器后 `list` 返回 `ok:false` **且不带 `sessions` 字段**、切回本机后清单条数与之前完全一致。
+
+它还覆盖**机器清单的合并**：`mergeEnvironments()` 是纯函数，所以规则可以直接断言——另一个插件发布的机器会变成环境、本地永远第一且不可被覆盖、**同名时本插件自己写的那条赢**、跨插件边界过来的 alias 照样要过校验（`local` 冒充、空 alias、非法主机名全部拒掉）。桩 ctx 里放一个 `get("remoteHosts")` 就能驱动整条真实路径，并且断言那台**发布的**机器不只是一个列表项：它能被 `set`、会走同一个探针、会拿到发布者给的 `dshHome`。
+
+> 这条集成在**两个插件同时装载的一次性 profile** 里验过：session-hub 的那一行**完全没有 config**，`hubcheck2 --dump-config` 里 `environments` 一个字都没有，而 `environment list` 仍然返回 `pro14uu`（label `pro14`），`set pro14uu` 后 `active.dshHome` 正是 remote-agent 发布的 `/home/zakl/.dsh`，`list` 依旧是 `ok:false` 且无 `sessions`。也就是说：**清单真的来自另一个插件，而不是碰巧两边都写了一遍。**
+
+> 这两个测试能存在，是因为配置是**数据**而不是散落在代码里的字符串：`environments.mjs` 只是把一份 `config` 传给 `apply()`，和 Cordis 加载器做的事一样。
+
 
 ### 为什么有 reload 测试
 
@@ -678,7 +1040,7 @@ node test/preview.mjs  # 实时预览的推导、hook 覆盖、sink 的输入校
 所以 `test/render.mjs` 干了三件事：
 
 1. 用 `window.__ModuleLoader__` 的**真实握手机制**加载 `client.js`；
-2. 用桩 Cordis 上下文跑 `apply()`，抓出注册的六个组件（并按 `name#key` 区分——右侧栏 body 和它的 chip 用的是同一个 key）；
+2. 用桩 Cordis 上下文跑 `apply()`，抓出注册的九个组件（并按 `name#key` 区分——右侧栏 body 和它的 chip 用的是同一个 key）；
 3. 用一个极简 React（函数组件即普通函数、函数元素立即求值、hook 单元按组件身份持久化）**真的渲染一遍**，并把 `fetch` 转发到真实的宿主路由，让数据链路也是真的。
 
 实测渲染出 **56 个分组、167 行、2 个展开箭头、167 个置顶开关**——167 行正好是「每组前 10 条 + 子代理行」的分页结果，2 个箭头正好是两个有子代理的会话。
@@ -689,7 +1051,17 @@ node test/preview.mjs  # 实时预览的推导、hook 覆盖、sink 的输入校
 >
 > 原来的假 React 不校验类型，于是**测试全绿而线上崩**——这个缺口是本次补上的。
 
-它同时也验证了：`apply()` 恰好注册七个组件（多一个少一个都失败）、桥与确认弹窗与新建会话选择器在无状态时确实渲染 `null`、以及**没有一行标题渲染出 `undefined`**。它还**渲染实时模式**（用一个合成的 preview 响应，不依赖这台机器当下在跑什么），断言那张卡带着**两个动作**、**可拖拽**、并且 IN / OUT / 来源三者都渲染出来；**每个项目表头恰好三个控件**（新建会话 / 置顶 / 删除）且都带 tooltip、**每个项目表头都显示了真实的最近交互时间**、以及**打开时恰好一个项目是展开的**（其余收起的那个默认）。
+它同时也验证了：`apply()` 恰好注册九个组件（多一个少一个都失败）、桥与确认弹窗与新建会话选择器与配置编辑器在无状态时确实渲染 `null`、以及**没有一行标题渲染出 `undefined`**。
+
+它还钉住了一条**只有远端环境才会走到的分支**：DSH 的「打开」在本机是交给本机工作区注册表的快捷路径，在远端**必须不走**——否则会拿一个远端 session id 去打开本机的会话，看起来还像是成功了。测试把 `environment` 这一个 op 的回答换成「远端」（其余 op 仍然打到真实宿主路由），再把两条分支**用 toast 区分开**：本机走快捷路径，在这个没有 `uiWorkspace` 的假环境里报 `failed`；远端转而问宿主，报 `openNone`。**把那个 `&& !onRemoteEnvironment()` 去掉，测试立刻变红**。
+
+> 这里也踩到一次假 React 的坑：live 那一节为了播种状态会 `cells.clear()`，于是**面板已加载的清单也被清空了**——后面用了 `second.tree` 上的 handler（属于被清掉的那批 cell，写进去等于写进孤儿对象）和没过期的旧树。改成只用**新渲染**取 handler、并且重新跑一次清单加载才对。
+
+配置编辑器那一节是**点进去**的：假 React 分发不了真实事件，但节点上带着 handler，而组件从 store 读开关状态——所以调用 handler 就是这个座位真实做的事。测试断言 `.credentials.yaml` 打开后**没有编辑器**（只有「显示」），点「显示」之后编辑器出现且带正文，返回列表后打开的普通文件（`settings.json`，1640 字符）直接可编辑。
+
+> 这里踩到一个**假 React 的保真度缺口**：它不比较依赖数组、也不 memo 化 `useCallback`，所以每次渲染都会重跑 effect，把点击刚做出的选择清掉。真实 React 不会（依赖 `[load, environmentId]` 没变）。修法是交互后的断言**只渲染、不跑 effect**——注释写在测试里，免得下一个人以为是产品 bug。
+
+它还**渲染实时模式**（用一个合成的 preview 响应，不依赖这台机器当下在跑什么），断言那张卡带着**两个动作**、**可拖拽**、并且 IN / OUT / 来源三者都渲染出来；**每个项目表头恰好四个控件**（VS Code / 新建会话 / 置顶 / 删除）且都带 tooltip、**每个项目表头都显示了真实的最近交互时间**、以及**打开时恰好一个项目是展开的**（其余收起的那个默认）。
 
 `smoke` 按 Cordis 的真实调用方式驱动宿主半边（`apply(ctx)` → 抓取注册的路由 → 发真实 `Request`），断言：清单非空且按时间倒序、每张卡字段完整（含 `running`/`subagent` 布尔与 `live` 证据）、每个有会话的 agent 都能产出含 `## User` 的 transcript、**`status` 轮询覆盖清单里的每一个 key 且与 `runningCount` 一致**、**任何被判为「运行中」的卡都必须给出证据来源**、`continue` 必须落在当前工作区内、未知 key/op 返回结构化错误、重复 `apply()` 不因路由已注册而抛出。
 

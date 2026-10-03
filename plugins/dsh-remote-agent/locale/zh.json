@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "远端 Agent",
+    "description": "在这里驱动其他机器上的 coding agent：把远端 DSH 的 web 界面拉起来并直接以已授权状态打开，或者把远端的 CLI agent（codex 等）开在本窗口的终端里。"
+  }
+}

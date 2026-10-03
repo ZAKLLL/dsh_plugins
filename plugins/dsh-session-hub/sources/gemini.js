@@ -6,13 +6,18 @@
  * @module dsh-session-hub/sources/gemini
  */
 
-import { readFileSync } from "node:fs";
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
 import {
-  UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
-  parseJsonl, projectOf, textOf, toMs, trackTool,
+  UNTITLED,
+  accumulate,
+  home,
+  looksInjected,
+  num,
+  oneLine,
+  projectOf,
+  textOf,
+  toMs,
   handoffName,
   turnHeading,
 } from "../shared.js";
@@ -53,7 +58,7 @@ function buildGemini(file, stats, events, truncated) {
     lines.push(turnHeading(isHuman ? "User" : "Assistant", message?.timestamp), "", body, "");
   }
 
-  const cwd = geminiProjectPath(dirname(dirname(file)));
+  const cwd = geminiProjectPath(file);
   return {
     card: {
       key: `gemini:${file}`,
@@ -79,20 +84,72 @@ function buildGemini(file, stats, events, truncated) {
 /**
  * Gemini records the project root as the directory the chat file's parent is
  * named after, and mirrors it in a `.project_root` file.
+ *
+ * The file is read through the active store (see `hydrateGemini`) and cached
+ * here, because `build` is synchronous and because a remote environment must
+ * read the *remote* `.project_root` rather than this machine's.
  */
+const geminiRoots = new Map();
 
 /**
- * Gemini records the project root as the directory the chat file's parent is
- * named after, and mirrors it in a `.project_root` file.
+ * When the whole set was last fetched.
+ *
+ * The batched scan hydrates once for every session, but the local (per-file)
+ * path hydrates once per session — and re-reading two files per session for a
+ * value that never changes would be pure waste. The same short TTL the Codex
+ * index uses bounds it; a `.project_root` written in the last few seconds is
+ * simply picked up on the next scan.
  */
-function geminiProjectPath(sessionDir) {
-  for (const candidate of [`${sessionDir}/.project_root`, `${dirname(sessionDir)}/.project_root`]) {
-    try {
-      const text = readFileSync(candidate, "utf8").trim();
-      if (text !== "") return text;
-    } catch {
-      /* Optional file. */
+let geminiHydratedAt = 0;
+
+/** The two places Gemini has been seen to keep a project root for one session. */
+function geminiRootCandidates(file) {
+  const sessionDir = dirname(dirname(file));
+  return [`${sessionDir}/.project_root`, `${dirname(sessionDir)}/.project_root`];
+}
+
+/** Fetch the project-root files through the active store, once per scan. */
+async function hydrateGemini({ store, files }) {
+  const now = Date.now();
+  if (now - geminiHydratedAt < 5000) return;
+  geminiHydratedAt = now;
+
+  const wanted = [];
+  const seen = new Set();
+  for (const file of files) {
+    for (const candidate of geminiRootCandidates(file)) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      wanted.push(candidate);
     }
+  }
+  // One call for the lot when the store can batch; a handful otherwise.
+  const found =
+    typeof store.readHeads === "function"
+      ? await store.readHeads(wanted.map((path) => ({ path, bytes: 65536 })))
+      : new Map(
+          await Promise.all(
+            wanted.map(async (path) => {
+              try {
+                return [path, await store.readHead(path, 65536)];
+              } catch {
+                return [path, null];
+              }
+            }),
+          ),
+        );
+  for (const path of wanted) {
+    const head = found.get(path);
+    const text = head === undefined || head === null ? "" : head.text.trim();
+    if (text === "") geminiRoots.delete(path);
+    else geminiRoots.set(path, text);
+  }
+}
+
+function geminiProjectPath(file) {
+  for (const candidate of geminiRootCandidates(file)) {
+    const text = geminiRoots.get(candidate);
+    if (typeof text === "string" && text !== "") return text;
   }
   return null;
 }
@@ -159,10 +216,16 @@ export default defineAdapter({
   spawnCommand: "gemini",
   resumeCommand: (id) => `gemini --resume ${id}`,
   root: () => join(home(), ".gemini", "tmp"),
+  configFiles: () => [
+    { path: join(home(), ".gemini", "settings.json"), label: "settings.json", language: "json", creatable: true },
+  ],
   storeKind: "jsonl",
   match: (name) => name.endsWith(".jsonl"),
   concurrency: 8,
   prefix: { start: 131072, max: 2097152, complete: (events) => hasGeminiSignal(events) },
+  // `.project_root` sits beside the stores, so it is fetched through the active
+  // store before the synchronous `build` needs it.
+  hydrate: hydrateGemini,
   build: buildGemini,
   /**
    * Gemini records the model and that turn's usage on the same `gemini` event.

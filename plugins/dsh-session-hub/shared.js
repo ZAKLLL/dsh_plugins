@@ -225,9 +225,40 @@ export function blocksOf(content) {
 
 /** Add one turn's usage onto the running total. */
 
-export const home = () => homedir();
+/**
+ * This machine's home, whichever environment is active.
+ *
+ * Used for the things that are about *here*: the plugin's own state file, the
+ * hook spool, a local editor CLI. A session store on another machine must never
+ * be found through this.
+ */
+export const localHome = () => homedir();
 
-export const dshHome = () => process.env.DSH_HOME || join(home(), ".dsh");
+/** This machine's DSH home, whichever environment is active. */
+export const localDshHome = () => process.env.DSH_HOME || join(homedir(), ".dsh");
+
+/**
+ * The active environment's home, which is what every adapter derives a store
+ * root from.
+ *
+ * One module-level scope rather than an argument on `root()`: the adapters are
+ * pure descriptions of a dialect, and threading an environment through all six
+ * of them would be environment plumbing in the one place this codebase keeps
+ * free of it. `index.js` sets this exactly when it swaps the store, so the two
+ * can never disagree about which machine they are describing.
+ */
+let environmentScope = null;
+
+/** Point `home()`/`dshHome()` at another machine, or back at this one. */
+export function setEnvironmentScope(scope) {
+  environmentScope = scope ?? null;
+}
+
+/** The active environment's home directory. */
+export const home = () => environmentScope?.home ?? localHome();
+
+/** The active environment's DSH home, where `sessions/` lives. */
+export const dshHome = () => environmentScope?.dshHome ?? localDshHome();
 
 /** A fresh all-zero usage counter. */
 export function emptyTokens() {

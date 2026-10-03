@@ -30,28 +30,108 @@ import geminiSource from "./sources/gemini.js";
 import piSource from "./sources/pi.js";
 import opencodeSource from "./sources/opencode.js";
 import {
-  UNTITLED,
-  accumulate,
-  blocksOf,
   dshHome,
-  home,
   decodeZstdFrames,
-  looksInjected,
-  num,
+  localHome,
+  localDshHome,
   oneLine,
   parseJsonl,
-  projectOf,
-  textOf,
+  setEnvironmentScope,
   toMs,
-  trackTool,
 } from "./shared.js";
-import { accessSync, constants as fsConstants, readFileSync } from "node:fs";
-import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { accessSync, constants as fsConstants } from "node:fs";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { createRemoteHost, localHost, parseProcesses } from "./host.js";
+import { localStore } from "./store.js";
+
+import {
+  LOCAL_ENVIRONMENT,
+  environmentStatePath,
+  findEnvironment,
+  isHostAlias,
+  mergeEnvironments,
+  normalizeEnvironments,
+  probeEnvironment,
+  readActiveId,
+  readEnvironmentState,
+  readSshHosts,
+  resolveHomes,
+  writeActiveId,
+  writeEnvironmentState,
+} from "./environments.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The byte source every session-store read goes through.
+ *
+ * Swapped by the environment switcher. It is module state rather than a
+ * parameter on every call because the adapters are what read stores, and an
+ * adapter must stay a pure description of one dialect — handing it a store
+ * argument would push environment plumbing into all six of them.
+ */
+let active = localHost.store;
+
+/**
+ * The machine the panel is pointed at, as something that can be *used*.
+ *
+ * `store` above is the byte half of this; a host adds the two things bytes do
+ * not cover — running a command over there, and phrasing a command for a
+ * terminal here. Both are swapped together, by `activateEnvironment`, so the two
+ * can never disagree about which machine they are describing.
+ */
+let activeHost = localHost;
+
+/** The host the active environment is. */
+function host() {
+  return activeHost;
+}
+
+/** The store the active environment reads through. */
+function store() {
+  return activeHost.store;
+}
+
+/** Point every later store read at another machine (or back at this one). */
+export function setStore(next) {
+  // Kept for the tests, which exercise the store seam on its own. A bare store
+  // is wrapped in the local host so nothing downstream sees a half-swapped pair.
+  activeHost = next === undefined || next === null ? localHost : { ...localHost, store: next };
+  clearEnvironmentCaches();
+}
+
+/** Adopt a machine wholesale: its bytes and its commands together. */
+export function setHost(next) {
+  activeHost = next ?? localHost;
+  clearEnvironmentCaches();
+}
+
+/**
+ * Forget everything derived from the previous environment's bytes.
+ *
+ * Nothing here is keyed by environment, and it does not need to be: the caches
+ * are keyed by absolute store path, and two machines do not share one. Clearing
+ * is about the *listing*, which is a single global — without this, switching
+ * environments would show the previous machine's sessions until the next
+ * refresh, which is exactly the "present local data as remote" failure the
+ * switcher must not make.
+ */
+function clearEnvironmentCaches() {
+  // The process table is per machine, so it goes with the rest: a stale one
+  // would answer for the machine that was left.
+  scanStats.clear();
+  processCache.hostId = null;
+  processCache.value = [];
+  processCache.at = 0;
+  cache.clear();
+  modelTailCache.clear();
+  previewCache.clear();
+  storeReadings.clear();
+  lastCards = [];
+}
 
 /** The Cordis service this plugin requires to publish a browser route. */
 export const inject = ["connection"];
@@ -97,28 +177,8 @@ async function mapLimit(items, limit, worker) {
 }
 
 /** Recursively collect matching files under `root`, bounded on both axes. */
-async function walk(root, match, { maxFiles = 4000, maxDepth = 8 } = {}) {
-  const found = [];
-  const queue = [{ dir: root, depth: 0 }];
-  while (queue.length > 0 && found.length < maxFiles) {
-    const { dir, depth } = queue.shift();
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (found.length >= maxFiles) break;
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (depth < maxDepth) queue.push({ dir: path, depth: depth + 1 });
-      } else if (entry.isFile() && match(path, entry.name)) {
-        found.push(path);
-      }
-    }
-  }
-  return found;
+function walk(root, match, options) {
+  return store().walk(root, match, options);
 }
 
 /**
@@ -127,20 +187,8 @@ async function walk(root, match, { maxFiles = 4000, maxDepth = 8 } = {}) {
  * @returns {{ text: string, filled: boolean }} `filled` is false when the file
  * ended before the cap, which is how callers detect they saw the whole file.
  */
-async function readHead(path, bytes) {
-  const handle = await open(path, "r");
-  try {
-    const buffer = Buffer.alloc(bytes);
-    let total = 0;
-    while (total < bytes) {
-      const { bytesRead } = await handle.read(buffer, total, bytes - total, total);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-    }
-    return { text: buffer.subarray(0, total).toString("utf8"), filled: total >= bytes };
-  } finally {
-    await handle.close();
-  }
+function readHead(path, bytes) {
+  return store().readHead(path, bytes);
 }
 
 /** Drop a trailing line that the byte cap cut in half. */
@@ -172,7 +220,14 @@ async function readPrefix(file, { start, max, complete }) {
 
 
 const PROCESS_TTL_MS = 2000;
-const processCache = { at: 0, value: [] };
+/**
+ * The last process table, and which machine it came from.
+ *
+ * Keyed by host: two machines have two process tables, and a cache that did not
+ * say which one it held would show the previous machine's agents as this one's
+ * running sessions — the same misattribution the switch itself must not make.
+ */
+const processCache = { hostId: null, at: 0, value: [] };
 
 /**
  * The session id an agent process names on its command line, if any.
@@ -195,20 +250,19 @@ function sessionIdFromArgs(args) {
   return null;
 }
 
-/** The working directory of a live process, which is how a fresh run is matched. */
+/**
+ * The working directory of a live process, which is how a fresh run is matched.
+ *
+ * Asked of the machine the process is on — `/proc` on Linux, `lsof` elsewhere —
+ * because a remote agent's directory is not knowable from here.
+ */
 async function cwdOf(pid) {
   try {
-    const { stdout } = await execFileAsync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
-      timeout: 5000,
-      maxBuffer: 1024 * 1024,
-    });
-    for (const line of stdout.split("\n")) {
-      if (line.startsWith("n")) return line.slice(1);
-    }
+    return await host().cwdOf(pid);
   } catch {
-    /* lsof may be denied, or the process may have exited between the calls. */
+    /* Denied, gone, or a machine that stopped answering between the calls. */
+    return null;
   }
-  return null;
 }
 
 /**
@@ -277,46 +331,48 @@ function parseEtime(text) {
   return Number(days ?? 0) * 86400 + Number(hours ?? 0) * 3600 + Number(minutes) * 60 + Number(seconds);
 }
 
-/** Every live agent process on this machine, refreshed on a short interval. */
+/**
+ * Every live agent process on the active machine, refreshed on a short interval.
+ *
+ * The process table is asked of whatever machine the panel is pointed at, so a
+ * remote agent is as visible as a local one — which is what makes the green dot,
+ * the "focus the window it is already in" path, and the delete guard's "this
+ * session is still running" all mean something over there.
+ */
 async function scanAgentProcesses() {
   const now = Date.now();
-  if (now - processCache.at < PROCESS_TTL_MS) return processCache.value;
+  const machine = host();
+  if (processCache.hostId === machine.id && now - processCache.at < PROCESS_TTL_MS) return processCache.value;
 
   const found = [];
   try {
-    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,etime=,command="], { timeout: 8000, maxBuffer: 8 * 1024 * 1024 });
-    for (const line of stdout.split("\n")) {
-      // `ps` prints " <pid> <etime> <executable> <args…>".
-      const match = /^\s*(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
-      if (match === null) continue;
-      const pid = Number(match[1]);
-      const elapsed = parseEtime(match[2]);
-      const args = match[4] ?? "";
+    for (const row of await machine.processes()) {
+      const elapsed = parseEtime(row.etime);
 
       // The executable, and the script it may hand off to: macOS reports a
       // shebang script as `/bin/sh /path/to/agent`, and a wrapper as
       // `node /path/to/claude-wrapper`, so the executable alone is `sh` or
       // `node` and matches nothing. Only the *first* argument is considered, so
       // a later argument that merely mentions an agent name is not a match.
-      const argv = args.split(/\s+/).filter(Boolean);
-      const names = [basename(match[3]), argv[0] === undefined ? null : basename(argv[0])];
+      const argv = row.args.split(/\s+/).filter(Boolean);
+      const names = [row.executable, argv[0] === undefined ? null : basename(argv[0])];
       const agent = SOURCES.find((source) =>
         source.executables.some((name) => names.some((candidate) => candidate !== null && namesAgent(candidate, name))),
       )?.id;
-      if (agent === undefined || !Number.isInteger(pid) || pid <= 0) continue;
+      if (agent === undefined) continue;
 
       found.push({
         agent,
-        pid,
-        args,
-        sessionId: sessionIdFromArgs(args),
+        pid: row.pid,
+        args: row.args,
+        sessionId: sessionIdFromArgs(row.args),
         cwd: null,
         // How long the process has been up, straight from the process table.
-        startedAt: elapsed === null ? null : Date.now() - elapsed * 1000,
+        startedAt: elapsed === null ? null : now - elapsed * 1000,
       });
     }
   } catch {
-    /* No `ps` — the other two sources still work. */
+    /* No process table — the other two sources still work. */
   }
 
   // Only a process that could not name its session needs a directory lookup.
@@ -325,6 +381,7 @@ async function scanAgentProcesses() {
     return entry;
   });
 
+  processCache.hostId = machine.id;
   processCache.value = found;
   processCache.at = now;
   return found;
@@ -563,11 +620,21 @@ function adapterOf(id) {
   return SOURCES.find((source) => source.id === id) ?? null;
 }
 async function parseValue(source, file, stats, { full }) {
+  // A dialect that needs a second file to interpret the first fetches it here,
+  // through the same store, because `build` is synchronous.
+  if (typeof source.hydrate === "function") await source.hydrate({ store: store(), files: [file] });
+  // A frames store is not byte-addressable, so the whole file is read — but read
+  // *here*, through the active store, and handed over. The one adapter with such
+  // a store used to read it itself, which read this machine while the panel was
+  // pointed at another one.
+  if (source.storeKind === "frames") {
+    return source.build(file, stats, await store().readFile(file));
+  }
   if (source.prefix === undefined) {
     return source.build(file, stats);
   }
   if (full) {
-    return source.build(file, stats, parseJsonl(await readFile(file, "utf8")), false);
+    return source.build(file, stats, parseJsonl((await store().readFile(file)).toString("utf8")), false);
   }
   const { events, truncated } = await readPrefix(file, source.prefix);
   return source.build(file, stats, events, truncated);
@@ -576,11 +643,24 @@ async function parseValue(source, file, stats, { full }) {
 /** File → parsed value, invalidated by mtime + size. */
 const cache = new Map();
 
+/**
+ * Stats this scan already fetched, so a later read does not ssh again.
+ *
+ * The batched `statMany` is one round trip for a whole source; asking per card
+ * afterwards throws that away. Measured against a real machine: the per-card
+ * re-stat was most of a 3.9-second warm list, because a round trip was paid once
+ * per card for a number the scan already had.
+ *
+ * Cleared at the start of every inventory, so this is strictly "what this pass
+ * knows" — never a stale answer handed to a later request.
+ */
+const scanStats = new Map();
+
 /** The listing path: cached, prefix-based, cheap. */
 async function cachedCard(source, file, force) {
   let stats;
   try {
-    stats = await stat(file);
+    stats = await store().stat(file);
   } catch {
     return null;
   }
@@ -588,9 +668,91 @@ async function cachedCard(source, file, force) {
   const hit = cache.get(file);
   if (!force && hit !== undefined && hit.stamp === stamp) return hit.value;
 
+  scanStats.set(file, stats);
   const value = await parseValue(source, file, stats, { full: false });
   cache.set(file, { stamp, value });
   return value;
+}
+
+/**
+ * The listing path for a whole source's files.
+ *
+ * Off a local disk this is the same parallel per-file parse it has always been.
+ * Across an ssh connection it is a handful of *batched* round trips instead: one
+ * `stat` call for the set, then one prefix read for every file that still needs
+ * one, repeated only for the files whose first prefix was not enough. A
+ * per-file scan of a few thousand rollouts is a few thousand round trips, which
+ * is minutes; this is seconds.
+ *
+ * The two paths must agree exactly — they differ only in how many `read` calls
+ * it takes to learn the same bytes — so a store that cannot batch falls through
+ * to `cachedCard` unchanged.
+ */
+async function cachedCards(source, files, force) {
+  const canBatch =
+    source.prefix !== undefined &&
+    typeof store().statMany === "function" &&
+    typeof store().readHeads === "function";
+  if (!canBatch) {
+    return await mapLimit(files, source.concurrency, (file) => cachedCard(source, file, force));
+  }
+
+  // One hydration for the whole source, not one per file: Codex's index is
+  // shared by every rollout, and Gemini's project roots are fetched in a batch.
+  if (typeof source.hydrate === "function") await source.hydrate({ store: store(), files });
+
+  const values = new Map();
+  const stats = await store().statMany(files);
+  for (const [file, stat] of stats) {
+    if (stat !== null && stat !== undefined) scanStats.set(file, stat);
+  }
+  const pending = [];
+  for (const file of files) {
+    const stat = stats.get(file);
+    if (stat === undefined || stat === null) {
+      values.set(file, null);
+      continue;
+    }
+    const stamp = `${stat.mtimeMs}:${stat.size}`;
+    const hit = cache.get(file);
+    if (!force && hit !== undefined && hit.stamp === stamp) {
+      values.set(file, hit.value);
+      continue;
+    }
+    pending.push({ file, stat, stamp });
+  }
+
+  const { start, max, complete } = source.prefix;
+  let size = start;
+  let waiting = pending;
+  while (waiting.length > 0) {
+    const heads = await store().readHeads(waiting.map(({ file }) => ({ path: file, bytes: size })));
+    const again = [];
+    for (const entry of waiting) {
+      const head = heads.get(entry.file);
+      if (head === undefined) {
+        values.set(entry.file, null);
+        continue;
+      }
+      const truncated = head.filled;
+      const text = truncated ? dropPartialLine(head.text) : head.text;
+      const events = parseJsonl(text);
+      // The same stopping rule `readPrefix` uses, so a file stops growing at
+      // exactly the point it would have stopped at on a local disk.
+      if (!truncated || size >= max || complete(events)) {
+        const value = source.build(entry.file, entry.stat, events, truncated);
+        cache.set(entry.file, { stamp: entry.stamp, value });
+        values.set(entry.file, value);
+      } else {
+        again.push(entry);
+      }
+    }
+    if (again.length === 0) break;
+    size = Math.min(size * 4, max);
+    waiting = again;
+  }
+
+  return files.map((file) => values.get(file) ?? null);
 }
 
 /** The most recent inventory, so a lightweight `status` poll can skip the scan. */
@@ -683,18 +845,11 @@ async function readStoreTail(card, bytes) {
  * only the tail says which model is *current*.
  */
 async function readStoreHead(card, bytes) {
-  const handle = await open(card.file, "r");
-  try {
-    const buffer = Buffer.alloc(bytes);
-    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
-    const slice = buffer.subarray(0, Math.max(0, bytesRead));
-    if (adapterOf(card.agent)?.storeKind === "frames") return decodeZstdFrames(slice).toString("utf8");
-    const text = slice.toString("utf8");
-    const lastBreak = text.lastIndexOf("\n");
-    return lastBreak < 0 ? text : text.slice(0, lastBreak);
-  } finally {
-    await handle.close();
-  }
+  const slice = await store().readAt(card.file, 0, bytes);
+  if (adapterOf(card.agent)?.storeKind === "frames") return decodeZstdFrames(slice).toString("utf8");
+  const text = slice.toString("utf8");
+  const lastBreak = text.lastIndexOf("\n");
+  return lastBreak < 0 ? text : text.slice(0, lastBreak);
 }
 
 /** file -> { stamp, model }, so a scan only pays for files that changed. */
@@ -720,11 +875,13 @@ async function modelFromTail(card) {
   const adapter = adapterOf(card.agent);
   if (adapter?.readStoreEvent === undefined || typeof card.file !== "string") return null;
 
-  let stats;
-  try {
-    stats = await stat(card.file);
-  } catch {
-    return null;
+  let stats = scanStats.get(card.file) ?? null;
+  if (stats === null) {
+    try {
+      stats = await store().stat(card.file);
+    } catch {
+      return null;
+    }
   }
   const stamp = `${stats.size}:${Math.round(stats.mtimeMs)}`;
   const cached = modelTailCache.get(card.file);
@@ -776,18 +933,32 @@ async function modelFromTail(card) {
 async function inventory(force, ctx) {
   const cards = [];
   const sources = [];
+  // A pass's stats are its own: keeping them would answer a later request with a
+  // file's previous size.
+  scanStats.clear();
 
-  for (const source of SOURCES) {
+  /**
+   * Every source is gathered at once.
+   *
+   * They are independent by construction, and when the panel is pointed at
+   * another machine each one costs at least a round trip just to *walk* — six
+   * sequential `find`s were most of a three-second remote scan. `mapLimit`
+   * preserves the order the panel lists agents in, and turns one broken store
+   * into a missing source rather than a failed scan.
+   */
+  const gathered = await mapLimit(SOURCES, SOURCES.length, async (source) => {
     const root = source.root();
     // A source that owns a non-file store answers with its own list.
     const values =
       typeof source.list === "function"
         ? await source.list(force)
-        : await mapLimit(
-            await walk(root, (_path, name) => source.match(name)),
-            source.concurrency,
-            (file) => cachedCard(source, file, force),
-          );
+        : await cachedCards(source, await walk(root, (_path, name) => source.match(name)), force);
+    return { source, root, values };
+  });
+
+  for (const entry of gathered) {
+    if (entry === null) continue;
+    const { source, root, values } = entry;
     let parsed = 0;
     let skipped = 0;
     for (const value of values) {
@@ -833,7 +1004,7 @@ async function fullValueByKey(key) {
     if (typeof source.full === "function") return await source.full(rest);
     let stats;
     try {
-      stats = await stat(rest);
+      stats = await store().stat(rest);
     } catch {
       return null;
     }
@@ -982,6 +1153,34 @@ async function deleteSession(card, force) {
   const source = SOURCES.find((entry) => entry.id === card.agent);
   if (source === undefined) throw new Error(`no store known for agent ${card.agent}`);
 
+  /**
+   * On another machine the running check cannot be performed at all.
+   *
+   * Liveness here is this machine's process table plus cmux's records, and
+   * neither can see a process on the far side. Left alone, the guard would
+   * simply stop working exactly where a mistake is hardest to notice: the card
+   * would look idle, the delete would succeed, and a live agent's log would be
+   * gone. Silence is the one wrong answer, so the deletion is refused until the
+   * caller says — explicitly — that it knows liveness was not checked.
+   */
+  const remote = activeRemote();
+  if (remote !== null && force !== true) {
+    // Liveness over there is real but weaker: it is the remote process table,
+    // and a process is only matched when it names its session or its working
+    // directory does. So "not seen" is not the same as "not running", and the
+    // caller has to say it knows that. A session we *did* see running gets the
+    // same plain refusal as a local one, because there the answer is not in
+    // doubt at all.
+    const seen = card.running === true;
+    const error = new Error(
+      seen
+        ? "session is running"
+        : `cannot be sure this session is not still running on ${remote.label} — its agent is only visible there when it names the session`,
+    );
+    error.code = seen ? "running" : "liveness-unknown";
+    throw error;
+  }
+
   if (card.running === true && force !== true) {
     const error = new Error("session is running");
     error.code = "running";
@@ -1009,9 +1208,12 @@ async function deleteSession(card, force) {
     throw new Error(`refusing to delete ${plan.target}: outside ${normalizedRoot}`);
   }
 
-  await rm(plan.target, { recursive: plan.recursive, force: false });
+  await store().remove(plan.target, { recursive: plan.recursive });
 
-  const indexEntryRemoved = plan.after !== undefined ? await plan.after() : false;
+  // The adapter's bookkeeping runs through the same store the removal did: the
+  // index it tidies is a sibling of the store, and on a remote environment it
+  // lives on that machine rather than this one.
+  const indexEntryRemoved = plan.after !== undefined ? await plan.after(store()) : false;
   cache.delete(card.file);
   previewCache.delete(card.file);
   lastCards = lastCards.filter((entry) => entry.key !== card.key);
@@ -1033,7 +1235,9 @@ async function deleteSession(card, force) {
 const pinCache = { at: 0, value: null };
 
 function pinPath() {
-  return join(dshHome(), "session-hub", "state.json");
+  // Pins are this plugin's own preference, not a session store, so they stay on
+  // this machine even while the panel is pointed at another one.
+  return join(localDshHome(), "session-hub", "state.json");
 }
 
 function normalizePins(parsed) {
@@ -1088,22 +1292,18 @@ async function prunePins(keys) {
  *
  * @returns {{ buffer: Buffer, fromStart: boolean }}
  */
-async function readTail(file, bytes) {
-  const handle = await open(file, "r");
-  try {
-    const stats = await handle.stat();
-    const start = Math.max(0, stats.size - bytes);
-    const buffer = Buffer.alloc(stats.size - start);
-    let total = 0;
-    while (total < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, start + total);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-    }
-    return { buffer: buffer.subarray(0, total), fromStart: start === 0 };
-  } finally {
-    await handle.close();
-  }
+async function readTail(file, bytes, stats) {
+  return store().readTail(file, bytes, stats);
+}
+
+/**
+ * The same tail read, pinned to this machine.
+ *
+ * The hook spool is a file *this* Host's agents append to, so it must never be
+ * read through a remote environment — a remote machine's hooks are its own.
+ */
+async function readTailLocal(file, bytes) {
+  return localStore.readTail(file, bytes);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1126,7 +1326,9 @@ const PREVIEW_CHARS = 1200;
  * cookie. Anything that can append a line can register — see `hook.mjs`.
  */
 function hooksPath() {
-  return join(dshHome(), "session-hub", "hooks.jsonl");
+  // Same reasoning as the pins: agents *here* append to this spool, and reading
+  // a remote machine's spool would attribute its hooks to local sessions.
+  return join(localDshHome(), "session-hub", "hooks.jsonl");
 }
 
 const hookCache = { at: 0, value: null };
@@ -1137,7 +1339,7 @@ async function readHooks() {
 
   const hooks = new Map();
   try {
-    const { buffer, fromStart } = await readTail(hooksPath(), 512 * 1024);
+    const { buffer, fromStart } = await readTailLocal(hooksPath(), 512 * 1024);
     let text = buffer.toString("utf8");
     if (!fromStart) text = text.slice(text.indexOf("\n") + 1);
     for (const line of text.split("\n")) {
@@ -1256,7 +1458,7 @@ async function readStore(card) {
 
   let stats;
   try {
-    stats = await stat(card.file);
+    stats = await store().stat(card.file);
   } catch {
     return null;
   }
@@ -1266,7 +1468,7 @@ async function readStore(card) {
     const stamp = `${stats.mtimeMs}:${stats.size}`;
     if (reading.stamped !== stamp) {
       try {
-        const text = decodeZstdFrames(await readFile(card.file)).toString("utf8");
+        const text = decodeZstdFrames(await store().readFile(card.file)).toString("utf8");
         for (const event of parseJsonl(text)) readEvent(card.agent, event, reading);
         reading.stamped = stamp;
       } catch (error) {
@@ -1286,15 +1488,12 @@ async function readStore(card) {
 
   while (reading.offset < stats.size) {
     const length = Math.min(stats.size - reading.offset, STORE_READ_CHUNK);
-    let handle = null;
     try {
-      handle = await open(card.file, "r");
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, reading.offset);
-      if (bytesRead <= 0) break;
-      reading.offset += bytesRead;
+      const buffer = await store().readAt(card.file, reading.offset, length);
+      if (buffer.length <= 0) break;
+      reading.offset += buffer.length;
 
-      const text = reading.carry + buffer.subarray(0, bytesRead).toString("utf8");
+      const text = reading.carry + buffer.toString("utf8");
       const lines = text.split("\n");
       // Whatever follows the last newline is a half-written line: keep it until
       // the rest of it arrives.
@@ -1312,8 +1511,6 @@ async function readStore(card) {
       }
     } catch {
       break;
-    } finally {
-      if (handle !== null) await handle.close().catch(() => {});
     }
   }
 
@@ -1341,7 +1538,7 @@ async function derivePreview(card) {
 
   let stats;
   try {
-    stats = await stat(card.file);
+    stats = await store().stat(card.file);
   } catch {
     return { input: null, output: null, at: null };
   }
@@ -1445,7 +1642,7 @@ async function waitForCmuxSocket(timeoutMs = 15000) {
   for (;;) {
     for (const candidate of CMUX_SOCKETS) {
       try {
-        accessSync(candidate.startsWith("/") ? candidate : join(home(), candidate), fsConstants.F_OK);
+        accessSync(candidate.startsWith("/") ? candidate : join(localHome(), candidate), fsConstants.F_OK);
         return true;
       } catch {
         /* Not listening yet. */
@@ -1492,7 +1689,7 @@ async function openInTerminal(card) {
     return { kind: "manual", sessionId: card.sessionId, command: null, reason: "no resume command known" };
   }
 
-  const cwd = typeof card.cwd === "string" && card.cwd !== "" ? card.cwd : home();
+  const cwd = typeof card.cwd === "string" && card.cwd !== "" ? card.cwd : localHome();
   const launched = await launchInTerminal(cwd, command, `${card.agentLabel} · ${card.title}`);
   return { ...launched, sessionId: card.sessionId };
 }
@@ -1505,9 +1702,13 @@ async function openInTerminal(card) {
  * open — falls through to the next, and the default plan is a single terminal
  * step, so a dialect only has to say something when it has more than one option.
  */
-async function openOriginal(value) {
+async function openOriginal(value, options) {
   const { card } = value;
   const adapter = adapterOf(card.agent);
+
+  const remote = activeRemote();
+  if (remote !== null) return await openOnRemote(card, adapter, remote, options);
+
   if (adapter?.clientOwned === true) {
     return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
   }
@@ -1539,14 +1740,389 @@ async function openOriginal(value) {
  * DSH sessions are started through the client (they belong to the workspace
  * registry, not to a shell), so this handles the command-line agents only.
  */
-async function spawnSession(agent, cwd) {
-  const command = adapterOf(agent)?.spawnCommand ?? null;
+async function spawnSession(agent, cwd, { launch = false } = {}) {
+  const target = adapterOf(agent);
+  const command = target?.spawnCommand ?? null;
   if (command === null) {
     return { ok: false, error: `no way to start a ${agent} session from here` };
   }
-  const launched = await launchInTerminal(cwd, command, `${adapterOf(agent).label} · ${basename(cwd)}`);
-  return { ok: true, agent, cwd, command, ...launched };
+
+  // Where the project is decides where the agent starts and how the terminal
+  // here must be asked to start it. On this machine that is simply the project
+  // directory and the bare command; on another one it is an `ssh -t` that enters
+  // the directory over there.
+  const machine = host();
+  const { cwd: start, command: invocation } = machine.invocation(command, { cwd });
+  const suffix = machine.kind === "remote" ? ` · ${machine.label}` : "";
+  const label = `${target.label} · ${basename(cwd)}${suffix}`;
+
+  // Same contract as `open`: on another machine the command goes back to the
+  // client, which types it into this window's terminal tab; `launch: true` opens
+  // a window instead, for a build whose terminal tab cannot be driven.
+  if (machine.kind === "remote" && !launch) {
+    return { ok: true, agent, cwd, command: invocation, cwd_start: start, remote: machine.id, label, kind: "terminal-command" };
+  }
+
+  const launched = await launchInTerminal(start, invocation, label);
+  return {
+    ok: true,
+    agent,
+    cwd,
+    command: invocation,
+    ...(machine.kind === "remote" ? { remote: machine.id } : {}),
+    ...launched,
+  };
 }
+
+/* ------------------------------------------------------------------ *
+ * Environments — which machine's sessions these are
+ * ------------------------------------------------------------------ */
+
+/**
+ * What this generation is currently pointed at.
+ *
+ * Module state, not per-request: an environment is a property of the panel, and
+ * the adapters answer "where do your stores live" from it. The probe and the
+ * last failure are kept beside the choice so the client can say *why* a machine
+ * is not showing anything, instead of showing nothing.
+ */
+const environmentState = {
+  /** Environments this plugin's own config declares, plus `local`. */
+  base: [LOCAL_ENVIRONMENT],
+  baseProblems: [],
+  /** The person's own list, read from this plugin's state file. */
+  saved: [],
+  /** The catalogue after every source that declares a machine is folded in. */
+  list: [LOCAL_ENVIRONMENT],
+  problems: [],
+  activeId: LOCAL_ENVIRONMENT.id,
+  probe: null,
+  error: null,
+  restoring: null,
+};
+
+/**
+ * The machines `dsh-remote-agent` publishes, if it is installed.
+ *
+ * `ctx.get` rather than `inject`: declaring `remoteHosts` as a hard dependency
+ * would make this plugin refuse to activate in a composition that has no
+ * remote-agent, which is far too strong a demand for an optional list of other
+ * machines. This is the same accessor the keep-alive uses for the timer.
+ */
+function publishedHosts(ctx) {
+  const service = typeof ctx?.get === "function" ? ctx.get("remoteHosts") : undefined;
+  if (service === undefined || service === null) return [];
+  if (Array.isArray(service)) return service;
+  try {
+    const listed = typeof service.list === "function" ? service.list() : [];
+    return Array.isArray(listed) ? listed : [];
+  } catch {
+    // A provider that throws must not take the whole panel with it; the
+    // machines this plugin knows on its own still answer.
+    return [];
+  }
+}
+
+/**
+ * Recompute the catalogue from both places a machine can be declared.
+ *
+ * Recomputed rather than frozen at activation, because the two sources do not
+ * arrive together: `remoteHosts` is published by another plugin's fiber, and a
+ * generation that read it once too early would show a short list forever.
+ */
+async function refreshEnvironmentList(ctx) {
+  const state = await readEnvironmentState();
+  environmentState.saved = state.hosts;
+  environmentState.list = mergeEnvironments(environmentState.base, publishedHosts(ctx), state.hosts);
+  environmentState.problems = environmentState.baseProblems;
+  return environmentState.list;
+}
+
+/**
+ * Every machine the panel could switch to, and where each one was declared.
+ *
+ * Three sources are merged for the switcher, so the manager has to show all
+ * three: a person who cannot see that an alias came from `~/.ssh/config` will
+ * wonder why deleting it does nothing to it.
+ */
+async function hostCandidates(ctx) {
+  const [sshHosts, state] = await Promise.all([readSshHosts(), readEnvironmentState()]);
+  const saved = new Map(state.hosts.map((host) => [host.alias, host]));
+  const published = new Map(publishedHosts(ctx).map((host) => [host.alias, host]));
+  const configured = new Map(
+    environmentState.base.filter((entry) => entry.kind === "remote").map((entry) => [entry.alias, entry]),
+  );
+  const inCatalogue = new Set(environmentState.list.map((entry) => entry.id));
+
+  const rows = new Map();
+  const add = (alias, row) => {
+    if (typeof alias !== "string" || alias === "") return;
+    // The first writer wins, in the same order the catalogue merges: a machine
+    // named by two sources must be described by the one that decides.
+    if (rows.has(alias)) return;
+    rows.set(alias, row);
+  };
+
+  for (const [alias, host] of configured) {
+    add(alias, { alias, label: host.label, source: "config", home: host.home ?? null, dshHome: host.dshHome ?? null });
+  }
+  for (const [alias, host] of saved) {
+    add(alias, {
+      alias,
+      label: host.label,
+      source: "saved",
+      home: host.home ?? null,
+      dshHome: host.dshHome ?? null,
+      enabled: host.enabled !== false,
+    });
+  }
+  for (const [alias, host] of published) {
+    add(alias, {
+      alias,
+      label: host.label,
+      source: "published",
+      home: host.home ?? null,
+      dshHome: host.dshHome ?? null,
+    });
+  }
+  for (const host of sshHosts) {
+    add(host.alias, {
+      alias: host.alias,
+      label: host.alias,
+      source: "ssh",
+      hostName: host.hostName,
+      user: host.user,
+      port: host.port,
+      home: null,
+      dshHome: null,
+    });
+  }
+
+  return [...rows.values()].map((row) => ({
+    ...row,
+    // What the switcher would show. A saved `enabled: false` is exactly the
+    // difference between "not an environment" and "not known at all".
+    enabled: row.enabled === undefined ? true : row.enabled,
+    isEnvironment: inCatalogue.has(row.alias),
+  }));
+}
+
+/**
+ * The active environment, when it is a machine other than this one.
+ *
+ * The launch transports ask this. Opening a session means something different on
+ * another machine, but *what* differs is a transport detail — an adapter still
+ * only says which command resumes its dialect.
+ */
+function activeRemote() {
+  if (environmentState.activeId === LOCAL_ENVIRONMENT.id) return null;
+  const environment = findEnvironment(environmentState.list, environmentState.activeId);
+  return environment !== null && environment.kind === "remote" ? environment : null;
+}
+
+/**
+ * Open a session that lives on another machine.
+ *
+ * The desktop deep links and the cmux focus path are deliberately skipped: both
+ * are about apps running *here*, and feeding a remote session's id to a local
+ * deep link opens the wrong thing or nothing at all. A terminal running `ssh -t`
+ * is the one transport that means the same thing on both sides.
+ */
+async function openOnRemote(card, adapter, environment, { launch = false } = {}) {
+  if (adapter?.clientOwned === true) {
+    return {
+      kind: "manual",
+      sessionId: card.sessionId,
+      command: null,
+      remote: environment.id,
+      reason: `a DSH session on ${environment.label} belongs to that machine's own DSH`,
+    };
+  }
+
+  const command = card.resumeCommand ?? resumeCommandFor(card);
+  if (command === null) {
+    return {
+      kind: "manual",
+      sessionId: card.sessionId,
+      command: null,
+      remote: environment.id,
+      reason: `no resume command is known for a ${card.agent} session`,
+    };
+  }
+
+  // The host decides where a local terminal starts and what it runs there: for a
+  // remote machine that is this machine's home plus an `ssh -t` carrying the
+  // command, because the session's `cwd` is a path on the far side.
+  const { cwd, command: invocation } = host().invocation(command, { cwd: card.cwd });
+
+  /**
+   * Hand the command back instead of opening a window, unless asked to open one.
+   *
+   * A remote session is best opened in this window's **own terminal tab** — the
+   * one the person already has, rather than a new cmux workspace or Terminal.app
+   * window. But typing into that tab is the *client's* job: the tab and the
+   * terminal view live in the browser. So the default answer is the command, and
+   * `launch: true` is the fallback for a build whose Sidebar terminal cannot be
+   * driven.
+   */
+  if (!launch) {
+    return {
+      kind: "terminal-command",
+      sessionId: card.sessionId,
+      command: invocation,
+      cwd,
+      remote: environment.id,
+      label: `${card.agentLabel} · ${card.title} · ${environment.label}`,
+    };
+  }
+
+  const launched = await launchInTerminal(cwd, invocation, `${card.agentLabel} · ${card.title} · ${environment.label}`);
+  return { ...launched, sessionId: card.sessionId, remote: environment.id };
+}
+
+/**
+ * Adopt an environment: scope the homes, swap the store, drop the caches.
+ *
+ * The order matters. The homes are scoped even when the probe failed — as long
+ * as they are known — because a store that cannot be read must fail *as that
+ * machine*. Letting the scope fall back to this machine would run this machine's
+ * paths through the remote store, or worse, read this machine's files while the
+ * panel claims to show another one.
+ */
+async function activateEnvironment(id, { force = false } = {}) {
+  const environment = findEnvironment(environmentState.list, id) ?? LOCAL_ENVIRONMENT;
+  environmentState.activeId = environment.id;
+
+  if (environment.kind === "local") {
+    setEnvironmentScope(null);
+    setHost(localHost);
+    environmentState.probe = null;
+    environmentState.error = null;
+    return environmentState;
+  }
+
+  const probe = await probeEnvironment(environment, { force });
+  const homes = resolveHomes(environment, probe);
+  environmentState.probe = probe;
+  setEnvironmentScope(homes);
+  // One object for both halves: bytes and commands follow the same environment.
+  setHost(createRemoteHost({ id: environment.id, label: environment.label, alias: environment.alias }));
+  environmentState.error =
+    probe.reachable && homes !== null ? null : probe.error ?? `cannot resolve $HOME on ${environment.alias}`;
+  return environmentState;
+}
+
+/** Restore the remembered environment once, before the first store read. */
+function ensureEnvironment(ctx) {
+  if (environmentState.restoring === null) {
+    environmentState.restoring = (async () => {
+      // The catalogue is recomputed *before* the remembered choice is resolved:
+      // the saved id may name a machine that only `remote-agent` knows about, or
+      // one the person added from the panel, and resolving it against a stale
+      // list would silently land on `local`.
+      await refreshEnvironmentList(ctx);
+      const saved = await readActiveId();
+      if (saved !== environmentState.activeId) await activateEnvironment(saved);
+      return environmentState;
+    })();
+  }
+  return environmentState.restoring;
+}
+
+/** The active environment as the client sees it, including whether it is usable. */
+function describeEnvironment() {
+  const environment = findEnvironment(environmentState.list, environmentState.activeId) ?? LOCAL_ENVIRONMENT;
+  const probe = environmentState.probe;
+  return {
+    id: environment.id,
+    kind: environment.kind,
+    label: environment.label,
+    alias: environment.alias ?? null,
+    reachable: environment.kind === "local" ? true : probe?.reachable === true && environmentState.error === null,
+    error: environmentState.error,
+    home: environment.home ?? probe?.home ?? null,
+    dshHome: environment.dshHome ?? probe?.dshHome ?? null,
+    agents: probe?.agents ?? null,
+    at: probe?.at ?? null,
+  };
+}
+
+/** Every environment the client may switch between. */
+function environmentCatalogue() {
+  return environmentState.list.map((environment) => ({
+    id: environment.id,
+    kind: environment.kind,
+    label: environment.label,
+    alias: environment.alias ?? null,
+    // Where it was declared. The manager needs it — a person who cannot see that
+    // an alias came from `~/.ssh/config` will wonder why "forget" does nothing.
+    source: environment.source ?? (environment.kind === "local" ? "local" : "config"),
+  }));
+}
+
+/**
+ * Refuse a store-reading operation while the active environment is unusable.
+ *
+ * This is what makes the switcher honest. Without it, selecting an unreachable
+ * machine would run this machine's adapters against paths that do not exist
+ * here and answer "no sessions" — a connection failure presented as an empty
+ * machine. Local data is never shown as remote, and broken is never shown as
+ * empty.
+ */
+function environmentGuard() {
+  if (environmentState.activeId === LOCAL_ENVIRONMENT.id) return null;
+  if (environmentState.error === null) return null;
+  return { ok: false, error: environmentState.error, environment: describeEnvironment() };
+}
+
+/** Operations that read a session store, and so need a usable environment. */
+const STORE_OPS = new Set([
+  "list",
+  "status",
+  "preview",
+  "models",
+  "messages",
+  "transcript",
+  "continue",
+  "open",
+  "reference",
+  "delete",
+  "delete-many",
+  "config",
+]);
+
+/* ------------------------------------------------------------------ *
+ * Agent configuration files
+ * ------------------------------------------------------------------ */
+
+/** One config file's declaration for an agent, or null when it declares none. */
+function declaredConfigFiles(agent) {
+  const source = adapterOf(agent);
+  if (source === null || typeof source.configFiles !== "function") return null;
+  const files = source.configFiles();
+  return Array.isArray(files) ? files : [];
+}
+
+/**
+ * The fence around a config read or write.
+ *
+ * Exactly the paths the adapter declared, matched as whole strings — not as
+ * prefixes, and not resolved. A viewer that accepted a path from the browser
+ * would be an arbitrary-file read and write on this machine *and*, once an
+ * environment is remote, on another one. The adapter names its own config files;
+ * nothing else is reachable.
+ */
+function fencedConfigPath(agent, path) {
+  const files = declaredConfigFiles(agent);
+  if (files === null) return { ok: false, error: `unknown agent: ${agent}` };
+  if (typeof path !== "string" || path === "") return { ok: false, error: "config needs a path" };
+  const hit = files.find((file) => file.path === path);
+  if (hit === undefined) return { ok: false, error: `${path} is not a declared config file for ${agent}` };
+  return { ok: true, file: hit };
+}
+
+/** Big enough for a real config, far too small for a runaway file. */
+const MAX_CONFIG_BYTES = 2 * 1024 * 1024;
 
 /* ------------------------------------------------------------------ *
  * Plugin
@@ -1583,10 +2159,234 @@ function hubState() {
  * @param ctx - The Host plugin context of the generation that is live.
  */
 /** Every operation this Host answers; also reported when an unknown one arrives. */
-const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "models", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many"];
+const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "models", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many", "environment", "hosts", "config"];
 
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
+
+  await ensureEnvironment(ctx);
+
+  /**
+   * Which machine the panel is looking at, and the switch itself.
+   *
+   * Switching is host-side state rather than a query parameter: the adapters
+   * answer "where is your store" from the active environment, so it has to be
+   * one answer for the whole Host, not a per-request override.
+   */
+  if (op === "environment") {
+    const action = typeof payload?.action === "string" ? payload.action : "list";
+    // Recomputed per request, so a machine another plugin started publishing is
+    // reachable without a reload — and so is one added from the manager.
+    await refreshEnvironmentList(ctx);
+    if (action === "list") {
+      return {
+        ok: true,
+        active: describeEnvironment(),
+        environments: environmentCatalogue(),
+        problems: environmentState.problems,
+      };
+    }
+    if (action === "set" || action === "probe") {
+      const id = action === "set" && typeof payload?.id === "string" ? payload.id : environmentState.activeId;
+      if (findEnvironment(environmentState.list, id) === null) {
+        return { ok: false, error: `unknown environment: ${id}`, environments: environmentCatalogue() };
+      }
+      await activateEnvironment(id, { force: true });
+      // Only a deliberate switch is remembered; a failed reconnect must not
+      // overwrite the last good choice with the machine that is still down.
+      if (action === "set") await writeActiveId(id);
+      return { ok: true, active: describeEnvironment(), environments: environmentCatalogue() };
+    }
+    return { ok: false, error: `unknown environment action: ${action}` };
+  }
+
+  if (STORE_OPS.has(op)) {
+    const refused = environmentGuard();
+    if (refused !== null) return refused;
+  }
+
+  /**
+   * The agents' own configuration files, read and written in place.
+   *
+   * This is the one operation that writes into a store's neighbourhood, so it is
+   * fenced twice: the path must be one the adapter declared, and the previous
+   * body is copied aside before the new one lands. The environment switcher
+   * makes the same call edit `/home/zakl/.claude/settings.json` over there
+   * instead of `~/.claude/settings.json` here, because the adapter derives the
+   * path from `home()` like everything else.
+   */
+  if (op === "config") {
+    const action = typeof payload?.action === "string" ? payload.action : "list";
+    const agent = typeof payload?.agent === "string" ? payload.agent : "";
+
+    if (action === "list") {
+      const groups = [];
+      for (const source of SOURCES) {
+        const files = declaredConfigFiles(source.id);
+        if (files === null || files.length === 0) continue;
+        const rows = await mapLimit(files, 4, async (file) => {
+          let stats = null;
+          try {
+            stats = await store().stat(file.path);
+          } catch {
+            /* Absent is the normal state of a config that was never written. */
+          }
+          return {
+            path: file.path,
+            label: file.label,
+            language: file.language ?? "text",
+            sensitive: file.sensitive === true,
+            creatable: file.creatable === true,
+            exists: stats !== null,
+            bytes: stats?.size ?? null,
+            mtimeMs: stats?.mtimeMs ?? null,
+          };
+        });
+        groups.push({ agent: source.id, agentLabel: source.label, files: rows });
+      }
+      return { ok: true, environment: describeEnvironment(), agents: groups };
+    }
+
+    if (action === "read" || action === "write") {
+      const path = typeof payload?.path === "string" ? payload.path : "";
+      const fence = fencedConfigPath(agent, path);
+      if (fence.ok !== true) return fence;
+
+      if (action === "read") {
+        try {
+          const stats = await store().stat(path);
+          if (stats.size > MAX_CONFIG_BYTES) {
+            return { ok: false, error: `${path} is ${stats.size} bytes — too large to edit here` };
+          }
+          const buffer = await store().readFile(path);
+          return {
+            ok: true,
+            path,
+            agent,
+            label: fence.file.label,
+            language: fence.file.language ?? "text",
+            sensitive: fence.file.sensitive === true,
+            text: buffer.toString("utf8"),
+            bytes: buffer.length,
+            mtimeMs: stats.mtimeMs,
+          };
+        } catch (error) {
+          return { ok: false, error: `cannot read ${path}: ${String(error?.message ?? error)}` };
+        }
+      }
+
+      if (typeof payload?.text !== "string") return { ok: false, error: "a config write needs a text body" };
+      if (Buffer.byteLength(payload.text, "utf8") > MAX_CONFIG_BYTES) {
+        return { ok: false, error: "the new body is too large to write" };
+      }
+      try {
+        // Keep the previous body. This is someone's real configuration, a
+        // mis-click is destructive, and the editor has no undo once the request
+        // has left the browser.
+        let backup = null;
+        try {
+          const previous = await store().readFile(path);
+          backup = `${path}.dsh-session-hub.bak`;
+          await store().writeText(backup, previous.toString("utf8"));
+        } catch {
+          backup = null;
+        }
+        await store().writeText(path, payload.text);
+        const stats = await store().stat(path);
+        return { ok: true, path, agent, bytes: stats.size, backup, environment: describeEnvironment() };
+      } catch (error) {
+        return { ok: false, error: `cannot write ${path}: ${String(error?.message ?? error)}` };
+      }
+    }
+
+    return { ok: false, error: `unknown config action: ${action}` };
+  }
+
+  /**
+   * The machines the panel can switch to, and the way to change that list.
+   *
+   * Deliberately **not** behind the reachability guard, unlike every other op:
+   * this is how a person gets out of an environment that cannot be reached, so
+   * it has to work precisely when that one does not. It reads no session store —
+   * only `~/.ssh/config`, this plugin's state file, and the `remoteHosts`
+   * service.
+   */
+  if (op === "hosts") {
+    const action = typeof payload?.action === "string" ? payload.action : "list";
+    const sshConfigPath = join(localHome(), ".ssh", "config");
+    const statePath = environmentStatePath();
+
+    if (action === "list") {
+      return { ok: true, sshConfigPath, statePath, hosts: await hostCandidates(ctx), active: describeEnvironment() };
+    }
+
+    if (action === "probe") {
+      const alias = typeof payload?.alias === "string" ? payload.alias.trim() : "";
+      // Any candidate may be tested, including one that is not an environment
+      // yet — "does this machine work" is the question you ask *before* adding it.
+      const candidate = (await hostCandidates(ctx)).find((row) => row.alias === alias);
+      if (candidate === undefined) return { ok: false, error: `unknown host: ${alias}` };
+      const probe = await probeEnvironment(
+        {
+          id: alias,
+          kind: "remote",
+          alias,
+          label: candidate.label,
+          ...(candidate.home === null ? {} : { home: candidate.home }),
+          ...(candidate.dshHome === null ? {} : { dshHome: candidate.dshHome }),
+        },
+        { force: true },
+      );
+      return { ok: true, alias, probe };
+    }
+
+    if (action === "save" || action === "remove") {
+      const alias = typeof payload?.alias === "string" ? payload.alias.trim() : "";
+      if (!isHostAlias(alias)) return { ok: false, error: `${JSON.stringify(alias)} is not a usable ssh host name` };
+
+      const state = await readEnvironmentState();
+      const kept = state.hosts.filter((host) => host.alias !== alias);
+
+      if (action === "save") {
+        const label = typeof payload?.label === "string" ? payload.label.trim() : "";
+        const entry = { alias, label: label === "" ? alias : label, enabled: payload?.enabled !== false };
+        for (const key of ["home", "dshHome"]) {
+          const value = payload?.[key];
+          if (value === undefined || value === null || value === "") continue;
+          if (typeof value !== "string" || !value.startsWith("/")) {
+            return { ok: false, error: `${key} must be an absolute path` };
+          }
+          entry[key] = value.trim();
+        }
+        kept.push(entry);
+      }
+
+      if (!(await writeEnvironmentState({ ...state, hosts: kept }))) {
+        return { ok: false, error: `could not write ${statePath}` };
+      }
+      await refreshEnvironmentList(ctx);
+
+      // Hiding or forgetting the machine you are looking at has to move you off
+      // it. Staying would leave the panel pointed at something no longer in the
+      // catalogue — the "showing a machine I did not choose" state the switcher
+      // exists to prevent.
+      if (findEnvironment(environmentState.list, environmentState.activeId) === null) {
+        await activateEnvironment(LOCAL_ENVIRONMENT.id, { force: true });
+        await writeActiveId(LOCAL_ENVIRONMENT.id);
+      }
+
+      return {
+        ok: true,
+        sshConfigPath,
+        statePath,
+        hosts: await hostCandidates(ctx),
+        active: describeEnvironment(),
+        environments: environmentCatalogue(),
+      };
+    }
+
+    return { ok: false, error: `unknown hosts action: ${action}` };
+  }
 
   if (op === "list") {
     const { cards, sources, runningCount, cmux, pins } = await inventory(payload?.refresh === true, ctx);
@@ -1689,7 +2489,20 @@ async function dispatch(payload, ctx) {
       : [];
     if (keys.length === 0) return { ok: false, error: "delete-many needs a non-empty keys array" };
 
+    // The same refusal as a single delete, stated once for the batch. It has to
+    // be here rather than left to `deleteSession`: the loop below passes `force`
+    // for every key (the running ones were already skipped above), so the
+    // per-session check would never be reached.
+    const batchRemote = activeRemote();
     const force = payload?.force === true;
+    if (batchRemote !== null && !force) {
+      return {
+        ok: false,
+        code: "liveness-unknown",
+        error: `cannot tell whether these sessions are still running on ${batchRemote.label} — deleting a live session's log can break it`,
+      };
+    }
+
     await refreshLive(ctx, lastCards);
     const failures = [];
     const removed = [];
@@ -1928,9 +2741,16 @@ async function dispatch(payload, ctx) {
     const target = adapterOf(agent);
     if (target === null) return { ok: false, error: `unknown agent: ${agent}` };
     if (target.spawnCommand === null) {
-      return { ok: false, error: `a ${target.label} session is started by the client` };
+      const remote = activeRemote();
+      return {
+        ok: false,
+        error:
+          remote !== null
+            ? `a ${target.label} session cannot be started on ${remote.label} from here — that machine's own DSH owns its workspaces`
+            : `a ${target.label} session is started by the client`,
+      };
     }
-    return await spawnSession(agent, cwd);
+    return await spawnSession(agent, cwd, { launch: payload?.launch === true });
   }
 
   if (op === "transcript" || op === "continue" || op === "open") {
@@ -1948,7 +2768,7 @@ async function dispatch(payload, ctx) {
         ...(await materialize(value, payload?.destDir, payload?.currentSessionId)),
       };
     }
-    return { ok: true, ...(await openOriginal(value)) };
+    return { ok: true, ...(await openOriginal(value, { launch: payload?.launch === true })) };
   }
 
   // A stale Host is the failure this reports most often, so the message names
@@ -1983,7 +2803,25 @@ async function dispatch(payload, ctx) {
  *
  * @param ctx - Host plugin context.
  */
-export function apply(ctx) {
+export function apply(ctx, config) {
+  // Every generation starts on this machine and re-reads the remembered choice
+  // on its first request. A reload must not inherit a store that pointed at a
+  // machine this generation has not probed.
+  const { environments, problems } = normalizeEnvironments(config);
+  environmentState.base = environments;
+  environmentState.baseProblems = problems;
+  environmentState.activeId = LOCAL_ENVIRONMENT.id;
+  environmentState.probe = null;
+  environmentState.error = null;
+  environmentState.restoring = null;
+  setEnvironmentScope(null);
+  setHost(localHost);
+  // The catalogue is filled on the first request, not here: machines come from
+  // other plugins' fibers (which may not have run yet) and from this plugin's
+  // own state file (which is a disk read). Applying is synchronous.
+  environmentState.saved = [];
+  environmentState.list = [LOCAL_ENVIRONMENT];
+
   hubState().handler = (payload) => dispatch(payload, ctx);
 
   ctx.effect(() => {
@@ -2026,3 +2864,20 @@ export function apply(ctx) {
     };
   }, "session-hub: /api route");
 }
+
+/**
+ * Pure helpers, exported so a test can reach them without a Host.
+ *
+ * `remoteInvocation` decides the exact string a terminal will run, and its whole
+ * risk is quoting — which is only observable by handing the string to a shell
+ * and looking at what `ssh` received. Going through the `open` op instead would
+ * launch a real terminal window.
+ */
+export const __test = {
+  /** The phrasing a remote host produces, built the way `activateEnvironment` builds it. */
+  remoteInvocation: (environment, cwd, command) =>
+    createRemoteHost({ id: environment.id, label: environment.label, alias: environment.alias }).invocation(command, {
+      cwd,
+    }).command,
+  parseProcesses,
+};

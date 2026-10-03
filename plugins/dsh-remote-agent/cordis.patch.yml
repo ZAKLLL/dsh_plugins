@@ -1,0 +1,42 @@
+# Bundle patch layer for dsh-remote-agent.
+#
+# The row loads this package's main entry (`index.js`) as the Host half, which
+# talks to each configured machine over SSH: it reports what is installed and
+# what is running, starts/stops a remote `dsh web` server, keeps the local port
+# forward that reaches it, and harvests the authorization token out of the
+# remote server's log. The `dsh.client` declaration in package.json makes the
+# web app load `client.js` as the browser half (the right-Sidebar tab).
+#
+# `port` is ONE number used on both ends on purpose — the remote server binds
+# 127.0.0.1 and mints an auth cookie whose `authority` is literally
+# `127.0.0.1:<port>`, so forwarding to a different local port authenticates
+# against the wrong authority. See index.js.
+- insert:
+    - id: remote-agent
+      name: dsh-remote-agent
+      config:
+        hosts:
+          - alias: pro14uu
+            label: pro14
+            agents:
+              # A web agent needs the remote `dsh` CLI and a profile it can boot.
+              - id: dsh
+                kind: web
+                label: DSH
+                port: 19391
+                bin: /home/zakl/.dsh-runtime/node_modules/.bin/dsh
+                dshHome: /home/zakl/.dsh
+                profile: remote-web
+              # A tty agent is opened in this window's terminal as `ssh -t`.
+              - id: codex
+                kind: tty
+                label: Codex
+                command: codex
+              # `claude` is installed at ~/.bun/bin/claude on the reference machine,
+              # and only the INTERACTIVE shell puts that on PATH — which is exactly
+              # why every probe and every `ssh -t` here goes through `$SHELL -lic`
+              # instead of `bash -lc`.
+              - id: claude
+                kind: tty
+                label: Claude Code
+                command: claude

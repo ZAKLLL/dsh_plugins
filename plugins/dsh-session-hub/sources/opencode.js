@@ -10,7 +10,7 @@
 
 import { dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
-import { UNTITLED, dumpText, handoffName, home, looksInjected, num, oneLine, projectOf, turnHeading } from "../shared.js";
+import { UNTITLED, dumpText, handoffName, home, looksInjected, oneLine, projectOf } from "../shared.js";
 
 /** The one place this adapter spells its own name. */
 const LABEL = "opencode";
@@ -228,6 +228,11 @@ export default defineAdapter({
   spawnCommand: "opencode",
   resumeCommand: (id) => `opencode --session ${id}`,
   root: () => dirname(opencodeDbPath()),
+  // Its config lives outside the store, in the XDG config directory, and is the
+  // one file here that usually does not exist yet — which is why it is creatable.
+  configFiles: () => [
+    { path: join(home(), ".config", "opencode", "opencode.json"), label: "opencode.json", language: "json", creatable: true },
+  ],
   storeKind: null,
   list: () => listOpencode(),
   full: (sessionId) => readOpencode(sessionId, { withBody: true }),

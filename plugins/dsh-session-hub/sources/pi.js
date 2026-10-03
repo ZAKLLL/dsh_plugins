@@ -6,12 +6,17 @@
  * @module dsh-session-hub/sources/pi
  */
 
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
 import {
-  UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
-  parseJsonl, projectOf, textOf, toMs, trackTool,
+  UNTITLED,
+  accumulate,
+  home,
+  looksInjected,
+  oneLine,
+  projectOf,
+  textOf,
+  toMs,
   handoffName,
   turnHeading,
 } from "../shared.js";
@@ -110,6 +115,10 @@ export default defineAdapter({
   spawnCommand: "pi",
   resumeCommand: (id) => `pi --session ${id}`,
   root: () => join(home(), ".pi", "agent", "sessions"),
+  configFiles: () => [
+    { path: join(home(), ".pi", "agent", "settings.json"), label: "settings.json", language: "json", creatable: true },
+    { path: join(home(), ".pi", "agent", "models.json"), label: "models.json", language: "json", creatable: true },
+  ],
   storeKind: "jsonl",
   match: (name) => name.endsWith(".jsonl"),
   concurrency: 8,

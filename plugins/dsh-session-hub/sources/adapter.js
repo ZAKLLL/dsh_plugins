@@ -109,9 +109,11 @@
  * @typedef {object} DeletePlan
  * @property {string} target Absolute path to remove.
  * @property {boolean} recursive True when `target` is a directory.
- * @property {() => Promise<boolean>} [after] Runs after a successful removal;
- *   returns whether it changed anything. This is where an adapter cleans up
- *   state it keeps elsewhere (Codex's name index, for instance).
+ * @property {(store: object) => Promise<boolean>} [after] Runs after a successful
+ *   removal; returns whether it changed anything. This is where an adapter
+ *   cleans up state it keeps elsewhere (Codex's name index, for instance). It
+ *   receives the active store, because that state may live on the same remote
+ *   machine the session did.
  */
 
 /**
@@ -131,6 +133,25 @@
  * @property {string|null} input Last human message.
  * @property {string|null} output Last visible assistant text.
  * @property {number|null} at Epoch ms of whichever message set `output`.
+ */
+
+/**
+ * One file that configures an agent.
+ *
+ * Paths are absolute and derived from `home()`/`dshHome()`, exactly like
+ * `root()` — which is what makes the config viewer work against another machine
+ * with no extra machinery: the same call answers "where is Claude's settings
+ * file" for whichever environment is active.
+ *
+ * @typedef {object} ConfigFile
+ * @property {string} path Absolute path on the active environment.
+ * @property {string} label Human name, e.g. "settings.json".
+ * @property {"json"|"toml"|"yaml"|"markdown"|"text"} [language] Syntax hint.
+ * @property {boolean} [sensitive] Holds credentials or tokens. The client hides
+ *   the body until it is explicitly revealed, so opening the panel cannot leak a
+ *   key onto a screen someone else is looking at.
+ * @property {boolean} [creatable] Offer an empty editor when the file is absent,
+ *   which is how a config that has never been written gets written.
  */
 
 /**
@@ -186,6 +207,20 @@
  *   store's own handle, for a self-served store.
  *
  * // --- per-dialect readings -------------------------------------------
+ * @property {(input: {store: object, files: string[]}) => Promise<void>} [hydrate]
+ *   Do async preparation through the **active store** before `build` runs.
+ *
+ *   A dialect sometimes needs a second file to interpret the first — Codex keeps
+ *   its model-generated thread names in a sibling index, Gemini mirrors a
+ *   project root in `.project_root`. `build` is synchronous by contract, so
+ *   those reads cannot happen inside it, and doing them with `node:fs` directly
+ *   would read *this* machine while the panel is pointed at another one.
+ *
+ *   `hydrate` is called once per source per scan (and again before a full
+ *   re-read), receives the same store every other read goes through, and is
+ *   expected to populate a module-level cache that the synchronous reader then
+ *   consults. It must be cheap when nothing changed.
+ *
  * @property {StoreKind} [storeKind] Defaults to `null` (no store reading).
  * @property {(event: object, state: PreviewState) => void} [readPreview]
  *   Fold one store event into the live preview's IN/OUT.
@@ -195,13 +230,24 @@
  * // --- deletion --------------------------------------------------------
  * @property {(card: SessionCard) => DeletePlan} [deletePlan] Defaults to
  *   removing `card.file`.
+ *
+ * // --- configuration ---------------------------------------------------
+ * @property {() => ConfigFile[]} [configFiles] The files that configure this
+ *   agent. Omitted when the agent has no config worth showing. The Host fences
+ *   every read and write to exactly these paths, so a viewer can never be
+ *   pointed at an arbitrary file.
  */
 
 /**
  * @callback BuildValue
  * @param {string} file
  * @param {{size: number, mtimeMs: number, birthtimeMs?: number}} stats
- * @param {object[]} events Parsed events from the prefix read.
+ * @param {object[]|Buffer} input Parsed events from the prefix read — **or**,
+ *   when `storeKind` is `"frames"`, the whole store as a `Buffer`. A frames
+ *   store is not byte-addressable, so there is no prefix to parse; the engine
+ *   reads it through the active store and hands the bytes over, because an
+ *   adapter that read them itself would read the wrong machine. This is also
+ *   what keeps `build` synchronous for every adapter.
  * @param {boolean} truncated True when the prefix was capped before `complete`.
  * @returns {Value}
  */
@@ -235,6 +281,9 @@ export function defineAdapter(spec) {
   }
   if (spec.spawnCommand !== undefined && spec.spawnCommand !== null && typeof spec.spawnCommand !== "string") {
     throw new Error(`session-hub adapter "${spec.id}": spawnCommand must be a string or null`);
+  }
+  if (spec.configFiles !== undefined && typeof spec.configFiles !== "function") {
+    throw new Error(`session-hub adapter "${spec.id}": configFiles must be a function returning ConfigFile[]`);
   }
   return spec;
 }

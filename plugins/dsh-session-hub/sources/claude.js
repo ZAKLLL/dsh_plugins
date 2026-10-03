@@ -6,12 +6,19 @@
  * @module dsh-session-hub/sources/claude
  */
 
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
 import {
-  UNTITLED, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
-  parseJsonl, projectOf, textOf, toMs, trackTool,
+  UNTITLED,
+  accumulate,
+  blocksOf,
+  home,
+  looksInjected,
+  oneLine,
+  projectOf,
+  textOf,
+  toMs,
+  trackTool,
   handoffName,
   turnHeading,
 } from "../shared.js";
@@ -156,6 +163,14 @@ export default defineAdapter({
   spawnCommand: "claude",
   resumeCommand: (id) => `claude --resume ${id}`,
   root: () => join(home(), ".claude", "projects"),
+  // Every one is creatable: Claude Code reads them when present and ignores them
+  // when not, so an empty editor is how a setting gets added at all.
+  configFiles: () => [
+    { path: join(home(), ".claude", "settings.json"), label: "settings.json", language: "json", creatable: true },
+    { path: join(home(), ".claude", "settings.local.json"), label: "settings.local.json", language: "json", creatable: true },
+    { path: join(home(), ".claude", "mcp.json"), label: "mcp.json", language: "json", creatable: true },
+    { path: join(home(), ".claude", "CLAUDE.md"), label: "CLAUDE.md", language: "markdown", creatable: true },
+  ],
   storeKind: "jsonl",
   match: (name) => name.endsWith(".jsonl"),
   concurrency: 16,

@@ -6,14 +6,19 @@
  * @module dsh-session-hub/sources/codex
  */
 
-import { readFileSync } from "node:fs";
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { defineAdapter } from "./adapter.js";
 import {
   UNTITLED,
-  attribute, accumulate, blocksOf, decodeZstdFrames, dshHome, home, looksInjected, num, oneLine,
-  parseJsonl, projectOf, textOf, toMs, trackTool,
+  attribute,
+  home,
+  looksInjected,
+  num,
+  oneLine,
+  projectOf,
+  textOf,
+  toMs,
+  trackTool,
   handoffName,
   compactionHeading,
   turnHeading,
@@ -30,17 +35,48 @@ const LABEL = "Codex";
  *   {"id":"<session id>","thread_name":"编写 SkillStudio 使用说明","updated_at":"…"}
  *
  * This is the closest thing Codex has to an AI title, and it beats anything
- * derived from the first message, so it is read once per scan.
+ * derived from the first message. It is read once per scan — through the active
+ * store, via `hydrateCodex` below, so a remote environment gets the remote
+ * index rather than this machine's.
  */
-const codexIndex = { at: 0, value: null };
+const codexIndex = { at: 0, stamp: null, value: null };
 
-function codexThreadNames() {
-  const now = Date.now();
-  if (codexIndex.value !== null && now - codexIndex.at < 5000) return codexIndex.value;
+/** The index is a sibling of the stores, so it follows the environment too. */
+function codexIndexPath() {
+  return join(home(), ".codex", "session_index.jsonl");
+}
+
+/**
+ * Read the thread-name index through the **active store**.
+ *
+ * `build` is synchronous, so this cannot happen inside it — and reading it with
+ * `node:fs` would read this machine while the panel is pointed at another one,
+ * leaving every remote Codex session entitled `(untitled)`. It is called once
+ * per source per scan, invalidated by mtime + size, and does nothing when the
+ * index has not changed.
+ *
+ * @param {{store: object}} input
+ */
+async function hydrateCodex({ store }) {
+  const path = codexIndexPath();
+  let stats = null;
+  try {
+    stats = await store.stat(path);
+  } catch {
+    /* Codex may not be installed, or may keep no index. */
+  }
+
+  const stamp = stats === null ? null : `${stats.mtimeMs}:${stats.size}`;
+  if (codexIndex.value !== null && codexIndex.stamp === stamp && Date.now() - codexIndex.at < 5000) return;
 
   const names = new Map();
-  try {
-    const text = readFileSync(join(home(), ".codex", "session_index.jsonl"), "utf8");
+  if (stamp !== null) {
+    let text = "";
+    try {
+      text = (await store.readFile(path)).toString("utf8");
+    } catch {
+      text = "";
+    }
     for (const line of text.split("\n")) {
       if (line.trim() === "") continue;
       try {
@@ -52,13 +88,22 @@ function codexThreadNames() {
         /* A partially written tail line is expected. */
       }
     }
-  } catch {
-    /* Codex may not be installed, or may keep no index. */
   }
 
   codexIndex.value = names;
-  codexIndex.at = now;
-  return names;
+  codexIndex.stamp = stamp;
+  codexIndex.at = Date.now();
+}
+
+/**
+ * The index as `hydrateCodex` last saw it.
+ *
+ * Synchronous by necessity: `buildCodex` runs inside a synchronous contract and
+ * only wants a map lookup. An empty map means "no index", which is what Codex
+ * with no index looks like anyway.
+ */
+function codexThreadNames() {
+  return codexIndex.value ?? new Map();
 }
 
 function codexUserText(payload) {
@@ -166,14 +211,18 @@ function hasCodexSignal(events) {
  * Codex keeps its model-generated thread names in its own index, so removing a
  * rollout without removing its entry leaves the name behind for a session that
  * no longer exists. Rewritten through a temp file so an interrupted write
- * cannot truncate the index.
+ * cannot truncate the index — which is why the store has a `move`.
+ *
+ * Through the store rather than `node:fs`, so deleting a session on another
+ * machine tidies *that* machine's index. Reading the local one there would find
+ * nothing and quietly report "no entry removed".
  */
-async function removeCodexIndexEntry(sessionId) {
+async function removeCodexIndexEntry(sessionId, store) {
   if (typeof sessionId !== "string" || sessionId === "") return false;
-  const path = join(home(), ".codex", "session_index.jsonl");
+  const path = codexIndexPath();
   let text;
   try {
-    text = await readFile(path, "utf8");
+    text = (await store.readFile(path)).toString("utf8");
   } catch {
     return false;
   }
@@ -195,9 +244,11 @@ async function removeCodexIndexEntry(sessionId) {
   if (!removed) return false;
 
   const temporary = `${path}.dsh-session-hub-${Date.now()}`;
-  await writeFile(temporary, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf8");
-  await rename(temporary, path);
+  await store.writeText(temporary, kept.length > 0 ? `${kept.join("\n")}\n` : "");
+  await store.move(temporary, path);
+  // The cache is now a fact about a file that no longer exists.
   codexIndex.value = null;
+  codexIndex.stamp = null;
   return true;
 }
 
@@ -246,10 +297,17 @@ export default defineAdapter({
   spawnCommand: "codex",
   resumeCommand: (id) => `codex resume ${id}`,
   root: () => join(home(), ".codex", "sessions"),
+  configFiles: () => [
+    { path: join(home(), ".codex", "config.toml"), label: "config.toml", language: "toml", creatable: true },
+    { path: join(home(), ".codex", "AGENTS.md"), label: "AGENTS.md", language: "markdown", creatable: true },
+  ],
   storeKind: "jsonl",
   match: (name) => name.endsWith(".jsonl"),
   concurrency: 16,
   prefix: { start: 131072, max: 2097152, complete: (events) => hasCodexSignal(events) },
+  // The thread-name index has to be fetched through the active store before the
+  // synchronous `build` can consult it.
+  hydrate: hydrateCodex,
   build: buildCodex,
   readStoreEvent(event, reading) {
     const payload = event.payload ?? {};
@@ -315,6 +373,6 @@ export default defineAdapter({
   deletePlan: (card) => ({
     target: card.file,
     recursive: false,
-    after: () => removeCodexIndexEntry(card.sessionId),
+    after: (store) => removeCodexIndexEntry(card.sessionId, store),
   }),
 });

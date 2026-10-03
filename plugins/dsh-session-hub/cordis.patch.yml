@@ -4,6 +4,19 @@
 # owns the cross-agent session scan and serves it to the browser over the
 # shared `/api` Fetch route. The `dsh.client` declaration in package.json makes
 # the web app load `client.js` as the browser half.
+#
+# ## Where a remote machine is declared
+#
+# Not here, if `dsh-remote-agent` is installed. That plugin's `hosts` are the
+# machine list — it is the plugin whose job is remote machines, and a host there
+# already names its alias, label and remote `dshHome`. This plugin publishes
+# nothing about machines and instead reads the `remoteHosts` service, folding
+# every published host into its environment switcher. One declaration, two uses.
+#
+# `environments` below is the **standalone** path: a composition with no
+# remote-agent still needs a way to say "that other box", and an entry here also
+# *overrides* a published host of the same alias — which is how a probe that got
+# `home` wrong is corrected. Leave it out when remote-agent is present.
 - insert:
     - id: session-hub
       name: dsh-session-hub
