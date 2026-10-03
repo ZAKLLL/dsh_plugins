@@ -33,7 +33,7 @@ import {
   dshHome,
   decodeZstdFrames,
   localHome,
-  localDshHome,
+  sessionHubHome,
   oneLine,
   parseJsonl,
   setEnvironmentScope,
@@ -1237,7 +1237,7 @@ const pinCache = { at: 0, value: null };
 function pinPath() {
   // Pins are this plugin's own preference, not a session store, so they stay on
   // this machine even while the panel is pointed at another one.
-  return join(localDshHome(), "session-hub", "state.json");
+  return join(sessionHubHome(), "state.json");
 }
 
 function normalizePins(parsed) {
@@ -1328,7 +1328,7 @@ const PREVIEW_CHARS = 1200;
 function hooksPath() {
   // Same reasoning as the pins: agents *here* append to this spool, and reading
   // a remote machine's spool would attribute its hooks to local sessions.
-  return join(localDshHome(), "session-hub", "hooks.jsonl");
+  return join(sessionHubHome(), "hooks.jsonl");
 }
 
 const hookCache = { at: 0, value: null };
@@ -1802,12 +1802,17 @@ const environmentState = {
 };
 
 /**
- * The machines `dsh-remote-agent` publishes, if it is installed.
+ * Machines another plugin publishes, when one does.
+ *
+ * This plugin owns the machine list itself — `~/.ssh/config`, its `environments`
+ * config and what was added from the panel — so this exists only so a plugin
+ * that knows about other machines can hand them over. It is a compatibility
+ * path, not the source of truth.
  *
  * `ctx.get` rather than `inject`: declaring `remoteHosts` as a hard dependency
- * would make this plugin refuse to activate in a composition that has no
- * remote-agent, which is far too strong a demand for an optional list of other
- * machines. This is the same accessor the keep-alive uses for the timer.
+ * would make this plugin refuse to activate in a composition where nobody
+ * publishes it, which is far too strong a demand for a list this optional. It is
+ * the same accessor the keep-alive uses for the timer.
  */
 function publishedHosts(ctx) {
   const service = typeof ctx?.get === "function" ? ctx.get("remoteHosts") : undefined;
@@ -2017,7 +2022,7 @@ function ensureEnvironment(ctx) {
   if (environmentState.restoring === null) {
     environmentState.restoring = (async () => {
       // The catalogue is recomputed *before* the remembered choice is resolved:
-      // the saved id may name a machine that only `remote-agent` knows about, or
+      // the saved id may name a machine that only a published list knows about, or
       // one the person added from the panel, and resolving it against a stale
       // list would silently land on `local`.
       await refreshEnvironmentList(ctx);

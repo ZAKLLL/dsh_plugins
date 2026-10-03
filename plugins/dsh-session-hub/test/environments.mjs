@@ -142,7 +142,7 @@ const hidden = mergeEnvironments(
 assert.deepEqual(hidden.map((entry) => entry.id), ["local"], "`enabled: false` subtracts a machine whatever else named it");
 
 const onlySaved = mergeEnvironments([], [], [{ alias: "215", label: "box" }]);
-assert.deepEqual(onlySaved.map((entry) => entry.id), ["local", "215"], "with no config and no remote-agent, saved still works");
+assert.deepEqual(onlySaved.map((entry) => entry.id), ["local", "215"], "with no config and no published list, saved still works");
 
 const mod = await import("../index.js");
 
@@ -162,9 +162,9 @@ mod.apply(
         },
       },
     },
-    // The optional `remoteHosts` service, as `dsh-remote-agent` publishes it.
+    // The optional `remoteHosts` service, as another plugin would publish it.
     // Read through `ctx.get` because a hard `inject` would stop this plugin
-    // activating in a composition that has no remote-agent at all.
+    // activating in a composition where nobody publishes one at all.
     get: (name) =>
       name === "remoteHosts"
         ? {

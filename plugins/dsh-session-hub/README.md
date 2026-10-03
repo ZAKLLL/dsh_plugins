@@ -58,39 +58,44 @@ sources/
 
 ### 机器只声明一次
 
-**装了 `dsh-remote-agent` 的话，机器的清单在它那里，不在这里。** 那个插件的 `hosts` 才是「有哪些远端机器」的定义——它本来就带着每台的 alias、label 和远端 `dshHome`，而且它还需要 bin/port/profile 来启动东西。这个插件把这些机器**读进来**，变成自己的环境：
+**机器的清单在这个插件里**，四个来源合并进同一个目录，**先写者说了算**：
 
-```js
-// dsh-remote-agent
-ctx.provide("remoteHosts", { list: () => hosts.map((h) => ({ alias, label, dshHome })) });
+| 顺序 | 来源 | 用来干什么 |
+| --- | --- | --- |
+| 1 | `environments` 配置（`cordis.patch.yml`） | 探针探不出来的东西：`dshHome`、好看的 `label`、或不写进 `~/.ssh/config` 的机器。**同名时以它为准** |
+| 2 | 面板里加的（`~/.dsh/session-hub/environment.json`） | 临时加一台 |
+| 3 | 别的插件发布的 `remoteHosts` | 兼容路径：有插件知道别的机器时可以把它们交过来（见下） |
+| 4 | `~/.ssh/config` | 探到的 Host，不用手写；面板上标出来源 |
 
-// dsh-session-hub
-const service = typeof ctx.get === "function" ? ctx.get("remoteHosts") : undefined;
+**目录里每一行都标出它从哪来**（`来自 ~/.ssh/config` / `来自插件配置` / `由其他插件发布` / `在这里添加`）——不然「忘记这台」在一台由文件拥有的机器上会看起来像坏了。
+
+```
+# cordis.patch.yml
+config:
+  environments:
+    - id: pro14uu
+      alias: pro14uu        # ~/.ssh/config 里的 Host，原样交给 ssh
+      label: pro14
+      home: /home/zakl      # 可选；不写就 ssh 过去问
+      dshHome: /home/zakl/.dsh
 ```
 
-所以这个插件的 `cordis.patch.yml` **不再声明 `environments`**——同一个 alias 写两遍就是两边迟早不一致。加一台机器只需要在一个地方加。
+**`environments` 里写一条是刻意的修正，不是重复**——比如探针把 `home` 探错了，写下来的那条覆盖探到的那条。
 
-两个细节是刻意的：
+> **兼容路径**：如果**别的插件**发布了 `remoteHosts` 服务（`{ list: () => [{ alias, label, dshHome }] }`），这些机器也会被折进目录，同样先写者胜。
+>
+> 用 **`ctx.get` 而不是 `inject`** 读它：把一个可选的机器列表写成硬依赖，会让这个插件在「没有那个插件」的组合里**拒绝激活**，代价太重。这和 keep-alive 问 timer 用的是同一个姿势（Cordis 里读未注入的服务属性会抛，`ctx.get` 是唯一正确的「有没有」问法）。
+>
+> **目录每次请求重算，不在激活时冻结**：几个来源不是一起到的，早读一次就会永远少几台机器。这也是为什么「记住的那台」在解析前先重算目录——否则一个刚出现的 id 会被静默解析成 `local`。
 
-- **用 `ctx.get` 而不是 `inject`**。把 `remoteHosts` 写成硬依赖，会让这个插件在「没装 remote-agent」的组合里**拒绝激活**——为了一个可选的机器列表付这个代价太重。这和 keep-alive 问 timer 用的是同一个姿势（Cordis 里读未注入的服务属性会抛，`ctx.get` 是唯一正确的「有没有」问法）。
-- **目录每次请求重算，不在激活时冻结**。两个来源不是一起到的：`remoteHosts` 由另一个插件的 fiber 发布，早读一次就会永远少几台机器。这也是为什么「记住的那台」在解析前先重算目录——否则一个只有 remote-agent 知道的 id 会被静默解析成 `local`。
+### 这个插件自己的文件放在哪
 
-`environments` 仍然支持，作为**独立运行**的路径（没装 remote-agent 时也能说「那台机器」），并且**同名时以它为准**：写下来的那条是刻意的修正（比如探针把 `home` 探错了），不是重复。
+三样东西属于**插件自己**，而不是某个 agent：置顶（`state.json`）、hook 汇聚的 spool（`hooks.jsonl`）、以及记住的环境（`environment.json`）。它们都在 `$DSH_SESSION_HUB_HOME`（默认 `$DSH_HOME/session-hub`）。
 
-配置写在这个插件自己的 `cordis.patch.yml` 里（**仅在没装 remote-agent、或要覆盖某台机器时**）：
+这个变量不是为了配置而配置，它修的是两类真问题：
 
-```yaml
-- insert:
-    - id: session-hub
-      name: dsh-session-hub
-      config:
-        environments:
-          - id: pro14uu
-            alias: pro14uu        # ~/.ssh/config 里的 Host，原样交给 ssh
-            label: pro14
-            home: /home/zakl      # 可选；不写就 ssh 过去问
-            dshHome: /home/zakl/.dsh
-```
+- **测试不能读你的真实状态。** 环境文件记着「上次切到哪台机器」，而测试是故意读真实会话存储的。两者共用一个位置之后，整套测试就取决于你上次切到哪——远端主机变成已保存环境的那天，每个列出会话的测试都开始死在一条断掉的隧道上，而不是死在它要测的东西上。现在每个这样的测试把自己指到一个临时目录，`sessions/` 照旧是真的。
+- **写入端和读取端必须同源。** 改这个路径的时候我把宿主的读取端搬走了、**忘了 `hook.mjs`**——于是 hook 全被追加进一个没人读的 spool。现在两边用同一个基准目录（`DSH_SESSION_HUB_HOOKS` 仍然可以单独指定文件本身，优先级更高）。
 
 ### 机器管理：从面板里加机器
 
@@ -101,7 +106,7 @@ const service = typeof ctx.get === "function" ? ctx.get("remoteHosts") : undefin
 | 来源 | 是什么 | 能做的事 |
 | --- | --- | --- |
 | 来自 `~/.ssh/config` | 你这台机器的 ssh 已经认识的别名，带 HostName / User / Port | 启用 / 停用 / 测试 / 编辑显示名与远端 home |
-| 来自 remote-agent | 另一个插件 `ctx.provide("remoteHosts")` 发布的机器 | 同上 |
+| 由其他插件发布 | 另一个插件 `ctx.provide("remoteHosts")` 交过来的机器（兼容路径） | 同上 |
 | 在这里添加 | 面板自己记的（`~/.dsh/session-hub/environment.json`） | 同上，外加「忘记」 |
 | 来自插件配置 | `cordis.patch.yml` 里的 `environments` | 同上 |
 
@@ -198,11 +203,16 @@ for (const row of await host().processes()) { … }   // 本机 ps / 远端 ssh 
 
 ### 「打开」在远端是什么意思
 
+为什么远端的默认不是「开一个终端窗口」而是「用你自己的终端 tab」：远端会话本来就只是一条 `ssh -t`，而侧栏那个 tab 是你已经在用的 shell——新开 cmux 工作区或 Terminal.app 窗口反而把上下文打散了。要做到这点，宿主**不能**自己开窗口：tab 和终端视图都活在浏览器里，所以 `open` / `spawn` 在远端默认**把命令交回去**（`kind: "terminal-command"`），由客户端去输。`launch: true` 是同一批 op 的退路，用来让宿主开窗口。
+
+那条链最容易错的是**时序，而且它不报错**：`view.write()` 在视图挂载、attach、变成可写之前是**静默 no-op**——输入没有 attachment 可去。所以客户端会轮询到可写为止，超时就诚实地说出来，退回复制。渲染测试真的点了这个按钮：断言 `openTabFromTarget("terminal", …)` 被调用一次、并且 `write("ssh -t …\n")` 拿到的是带换行的整条命令。
+
+
 adapter 只说**用什么命令续接它的方言**；「打开」这个动作由宿主按环境翻译：
 
 | | 本机 | 远端 |
 | --- | --- | --- |
-| 终端 | 直接跑 `codex resume <id>` | `ssh -t <alias> 'exec "$SHELL" -lic "cd <远端 cwd> && exec codex resume <id>"'` |
+| 终端 | 直接跑 `codex resume <id>`，在本机开 cmux / Terminal | **打回给客户端**，让它输进这个窗口**自己的终端 tab**（`openTabFromTarget("terminal")` → 轮询到可写 → `write`）；输入不进去才让宿主开 cmux / Terminal，最后才退回复制 |
 | 新建会话 | 在项目目录里跑 `codex` | 同理，`cd` 到**对面**的项目目录 |
 | 桌面深链 / cmux 聚焦 | 走 adapter 的 `openPlan` | **跳过** —— 两者都是「跑在**这里**的 app」，把远端 session id 喂给本地深链只会打开错的、或者什么都不打开 |
 | DSH 会话 | 交给本机的工作区注册表 | **拒绝**，并说明它属于对面那台机器自己的 DSH |
@@ -210,7 +220,7 @@ adapter 只说**用什么命令续接它的方言**；「打开」这个动作�
 两件事必须发生在对面，而且都曾经是「照直觉写就会错」的坑：
 
 - **`cd`**：会话记录的 `cwd` 是**对面**的路径。在本机拿远端 cwd 跑 resume，要么失败，要么更糟——成功进了一个恰好同名的本地目录。
-- **登录 shell**：agent 二进制要用**交互式** shell 去找。`claude` 在 `~/.bun/bin`，只有登录 rc 会把它放进 `PATH`；非交互式 shell 里它是 "command not found"，读起来像「那台机器没装这个 agent」。`dsh-remote-agent` 的 README 记的是同一个坑，这里是同一个 `$SHELL -lic`。
+- **登录 shell**：agent 二进制要用**交互式** shell 去找。`claude` 在 `~/.bun/bin`，只有登录 rc 会把它放进 `PATH`；非交互式 shell 里它是 "command not found"，读起来像「那台机器没装这个 agent」。这个坑最早是在那个已被合并进来的远端插件里踩到的，这里用的是同一个 `$SHELL -lic`。
 
 这条链唯一的风险是**引号**，而引号对不对是读不出来的——所以 `test/remote.mjs` 把生成的字符串**交给真的 `sh`**，让假 `ssh` 报告它到底收到了什么：必须是三个参数，第二个是 alias，第三个是**一整个**远端命令（含带空格的 cwd、嵌套的 `$SHELL -lic`）。要验的正是「手工拼命令」最容易错的地方。
 
@@ -893,7 +903,7 @@ DSH 的会话头里有 `parentSession`、`origin: "subagent"`、`delegationDepth
 ```
 dsh-session-hub/
 ├── package.json        # dsh.bundle.patch + dsh.client.platform
-├── cordis.patch.yml    # 插入 session-hub 这一行（机器清单在 remote-agent 那边，见上）
+├── cordis.patch.yml    # 插入 session-hub 这一行；机器清单就在这里的 config.environments（见上）
 ├── index.js            # 宿主半边：四个扫描器 + 统一模型 + 实时状态 + 预览 + transcript + 删除 + 置顶 + 配置 + 环境切换 + /api 路由
 ├── store.js            # 会话存储的字节从哪来：localStore（本机 fs）/ createRemoteStore（每操作或每批一次 ssh）
 ├── host.js             # 一台机器能做什么：exec / invocation / processes / cwdOf（本机与远端两个实现）
@@ -1014,7 +1024,7 @@ node test/remote.mjs   # 假 ssh 把另一台机器搬到本机：远端存储�
 
 它还覆盖**机器清单的合并**：`mergeEnvironments()` 是纯函数，所以规则可以直接断言——另一个插件发布的机器会变成环境、本地永远第一且不可被覆盖、**同名时本插件自己写的那条赢**、跨插件边界过来的 alias 照样要过校验（`local` 冒充、空 alias、非法主机名全部拒掉）。桩 ctx 里放一个 `get("remoteHosts")` 就能驱动整条真实路径，并且断言那台**发布的**机器不只是一个列表项：它能被 `set`、会走同一个探针、会拿到发布者给的 `dshHome`。
 
-> 这条集成在**两个插件同时装载的一次性 profile** 里验过：session-hub 的那一行**完全没有 config**，`hubcheck2 --dump-config` 里 `environments` 一个字都没有，而 `environment list` 仍然返回 `pro14uu`（label `pro14`），`set pro14uu` 后 `active.dshHome` 正是 remote-agent 发布的 `/home/zakl/.dsh`，`list` 依旧是 `ok:false` 且无 `sessions`。也就是说：**清单真的来自另一个插件，而不是碰巧两边都写了一遍。**
+> 这条兼容路径是在**两个插件并存时期的一次性 profile** 里验过的（那个插件后来被合并进本插件，所以现在没有第二个发布者）：session-hub 的那一行**完全没有 config**，`hubcheck2 --dump-config` 里 `environments` 一个字都没有，而 `environment list` 仍然返回 `pro14uu`（label `pro14`），`set pro14uu` 后 `active.dshHome` 正是 remote-agent 发布的 `/home/zakl/.dsh`，`list` 依旧是 `ok:false` 且无 `sessions`。也就是说：**清单真的来自另一个插件，而不是碰巧两边都写了一遍。**
 
 > 这两个测试能存在，是因为配置是**数据**而不是散落在代码里的字符串：`environments.mjs` 只是把一份 `config` 传给 `apply()`，和 Cordis 加载器做的事一样。
 

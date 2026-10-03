@@ -24,7 +24,15 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), ".dsh");
-const SPOOL = process.env.DSH_SESSION_HUB_HOOKS || join(DSH_HOME, "session-hub", "hooks.jsonl");
+/**
+ * The same base directory the Host resolves, or the two disagree.
+ *
+ * They did: relocating the plugin's state moved the reader and left this writer
+ * pointing at the old path, so every hook was appended to a spool nobody read.
+ * `DSH_SESSION_HUB_HOOKS` still names the file itself, and wins.
+ */
+const STATE_HOME = process.env.DSH_SESSION_HUB_HOME || join(DSH_HOME, "session-hub");
+const SPOOL = process.env.DSH_SESSION_HUB_HOOKS || join(STATE_HOME, "hooks.jsonl");
 
 /** `--flag value` pairs; a flag with no value becomes `true`. */
 function parseArgs(argv) {

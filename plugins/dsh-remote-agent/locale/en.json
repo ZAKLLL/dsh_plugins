@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Remote Agents",
-    "description": "Drive the coding agents running on your other machines from here: bring up a remote DSH web UI and open it already authorized, or open a remote CLI agent (codex, …) in this window's terminal."
-  }
-}

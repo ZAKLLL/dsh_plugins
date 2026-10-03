@@ -6,8 +6,7 @@ DeepSeek Harness（DSH）插件开发仓库。
 
 | 插件 | 说明 | 状态 |
 |------|------|------|
-| [`dsh-session-hub`](plugins/dsh-session-hub/README.md) | 把**所有** coding-agent 会话（DSH、Claude Code、Codex、Gemini CLI、pi、opencode）汇总到一个面板：跨全部项目收集，可拖进当前对话作为历史续接、可一键用原 Agent 打开、可实时预览正在跑的 agent，也能按项目直接起一个新会话。**可一键切到另一台机器**——走 SSH，同一套 adapter 读对面存储；并能就地读改每个 agent 的配置文件 | 开发中 |
-| [`dsh-remote-agent`](plugins/dsh-remote-agent/README.md) | 把**别的机器上**的 coding agent 拉到当前窗口：有 web 界面的（DSH）经 SSH 转发 + 从日志抓 token 自动授权直接打开，没有 web 界面的（codex 等）在当前窗口终端里开 `ssh -t` | 开发中 |
+| [`dsh-session-hub`](plugins/dsh-session-hub/README.md) | 把**所有** coding-agent 会话（DSH、Claude Code、Codex、Gemini CLI、pi、opencode）汇总到一个面板：跨全部项目收集，可拖进当前对话作为历史续接、可一键用原 Agent 打开、可实时预览正在跑的 agent，也能按项目直接起一个新会话。**可一键切到另一台机器**——走 SSH，同一套 adapter 读对面存储；并能就地读改每个 agent 的配置文件。**别的机器上的 agent 也拉得过来**：有 web 界面的（DSH）经 SSH 转发 + 从日志抓 token 自动授权打开，没有 web 界面的（codex 等）在当前窗口终端里开 `ssh -t` | 开发中 |
 | [`dsh-jvs-console`](plugins/dsh-jvs-console/README.md) | Zakl Agent（zakl_jvs）快捷控制台：右侧边栏直接看 jvs 状态、开关经跳板机的内部隧道（xy_proxy），并一键运行 jvs 子命令 | 开发中 |
 
 ## 目录结构
@@ -16,7 +15,6 @@ DeepSeek Harness（DSH）插件开发仓库。
 dsh_plugins/
 ├── plugins/
 │   ├── dsh-session-hub/   # 每个插件自成一个包（package.json 就在这一层）
-│   ├── dsh-remote-agent/
 │   └── dsh-jvs-console/
 ├── .githooks/             # Git hooks（通过 core.hooksPath 生效）
 ├── .gitmessage            # 提交信息模板

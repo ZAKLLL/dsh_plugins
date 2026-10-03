@@ -22,7 +22,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { bracketed, shq, sshText, unwrapBracketed } from "./ssh.js";
-import { localDshHome, localHome } from "./shared.js";
+import { localHome, sessionHubHome } from "./shared.js";
 
 /** This machine, always first and always present. */
 export const LOCAL_ENVIRONMENT = Object.freeze({
@@ -131,9 +131,9 @@ export function findEnvironment(environments, id) {
  * Three sources, in the order they win:
  *
  *   1. this plugin's own `config.environments` — a file-level correction, and
- *      the only source that exists in a composition with no remote-agent;
+ *      the only source that needs nothing else installed;
  *   2. the person's own list, edited from the panel;
- *   3. the machines `dsh-remote-agent` publishes.
+ *   3. the machines another plugin publishes (compatibility path).
  *
  * The second exists because a host declared for *launching* lives in a bundle
  * patch, which a running app should not rewrite — so the panel keeps its own
@@ -277,8 +277,8 @@ export async function readSshHosts() {
 /**
  * A machine the user added, which this plugin has to remember itself.
  *
- * `dsh-remote-agent`'s hosts are declared in a bundle patch, which is not a file
- * a running app should rewrite — so the panel's own list lives here, in this
+ * A host declared for *launching* lives in a bundle patch, which is not a file a
+ * running app should rewrite — so the panel's own list lives here, in this
  * plugin's state file. A saved host wins over a published one of the same alias:
  * the person typed it, so it is the more deliberate statement.
  *
@@ -325,7 +325,7 @@ function normalizeSavedHosts(rows) {
  * directory, beside `state.json` and `hooks.jsonl`.
  */
 export function environmentStatePath() {
-  return join(localDshHome(), "session-hub", "environment.json");
+  return join(sessionHubHome(), "environment.json");
 }
 
 /**

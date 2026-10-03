@@ -260,6 +260,26 @@ export const home = () => environmentScope?.home ?? localHome();
 /** The active environment's DSH home, where `sessions/` lives. */
 export const dshHome = () => environmentScope?.dshHome ?? localDshHome();
 
+/**
+ * Where this plugin keeps its **own** files: pins, the hook spool, the chosen
+ * environment.
+ *
+ * Relocatable, because those three are the only state here that belongs to the
+ * plugin rather than to an agent — so a test can point them at a scratch
+ * directory without also hiding the real session stores, which these tests
+ * deliberately read. Reading the real `environment.json` in a test made the
+ * whole suite depend on which machine the panel was last pointed at: the day a
+ * remote host became a saved environment, every test that lists sessions began
+ * failing on a dead tunnel instead of on what it was testing.
+ *
+ * It also means the state can be moved off a synced or shared directory without
+ * moving the plugin.
+ */
+export function sessionHubHome() {
+  const configured = process.env.DSH_SESSION_HUB_HOME;
+  return typeof configured === "string" && configured !== "" ? configured : join(localDshHome(), "session-hub");
+}
+
 /** A fresh all-zero usage counter. */
 export function emptyTokens() {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };

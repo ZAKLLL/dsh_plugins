@@ -193,7 +193,7 @@ window.__ModuleLoader__.load({
       hostsUnreachable: "unreachable",
       hostsSourceSsh: "from ~/.ssh/config",
       hostsSourceSaved: "added here",
-      hostsSourcePublished: "from remote-agent",
+      hostsSourcePublished: "published by another plugin",
       hostsSourceConfig: "from the plugin config",
       hostsSshPath: "Aliases come from {path}; nothing here edits that file.",
       hostsSaved: "Saved {alias}",
@@ -362,7 +362,7 @@ window.__ModuleLoader__.load({
       hostsUnreachable: "连不上",
       hostsSourceSsh: "来自 ~/.ssh/config",
       hostsSourceSaved: "在这里添加",
-      hostsSourcePublished: "来自 remote-agent",
+      hostsSourcePublished: "由其他插件发布",
       hostsSourceConfig: "来自插件配置",
       hostsSshPath: "别名来自 {path}；这里不会改那个文件。",
       hostsSaved: "已保存 {alias}",
@@ -2060,9 +2060,9 @@ window.__ModuleLoader__.load({
       /**
        * The machines this panel can switch to, and the way to change that list.
        *
-       * Three sources feed the switcher — `~/.ssh/config`, the machines
-       * `dsh-remote-agent` publishes, and the ones added here — so each row says
-       * where it came from. Without that, "forget" would look broken on an alias
+       * Four sources feed the switcher — this plugin's config, what was added
+       * here, what another plugin publishes, and `~/.ssh/config` — so each row
+       * says where it came from. Without that, "forget" would look broken on an alias
        * that a file owns.
        *
        * The list is deliberately reachable while an environment is unreachable:

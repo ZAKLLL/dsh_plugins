@@ -16,10 +16,23 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import zlib from "node:zlib";
+
+
+/**
+ * Keep this plugin's own files out of the real ones.
+ *
+ * `environment.json` remembers which machine the panel is pointed at, and the
+ * suite reads the real session stores on purpose. Pointing the two at the same
+ * place made every test depend on the person's last switch: the day a remote
+ * host became a saved environment, `list` began failing on a dead tunnel rather
+ * than on anything the test was about. The session stores are untouched — only
+ * pins, the hook spool and the chosen environment move.
+ */
+process.env.DSH_SESSION_HUB_HOME = await mkdtemp(join(tmpdir(), "dsh-session-hub-state-"));
 
 const mod = await import("../index.js");
 

@@ -71,41 +71,35 @@ root    :  session_id=019ed32f…  id=019ed32f…
 仍未做：实时视图的详情面板里还没有引用按钮（行上已有）。
 ---
 
-## 4. `dsh-remote-agent` 待重启验证 UI（代码与自动化验收已完成）
+## 4. `dsh-remote-agent`（**已移除**：能力已并入 session-hub）
 
-**背景**：新插件 [`plugins/dsh-remote-agent`](plugins/dsh-remote-agent/README.md) 把**别的机器上**的 coding agent 拉到当前窗口：有 web 界面的（DSH）经 SSH 转发 + 从日志抓 token 自动授权直接打开；没有的（codex 等）在当前窗口终端里开 `ssh -t`。
+原插件把别的机器上的 agent 拉到当前窗口。按「本机/远端用同一个 client 抽象」的方向重构后，它的三样能力去向如下：
 
-**已完成**：
-- 宿主半边对**真远端**全链路验收通过：`node test/harness.mjs --start --stop`（起服务 → 抓 token → 建转发 → 带 token 请求得 200 + cookie → 拆掉）。
-- 客户端半边加载测试通过：`node test/client-load.mjs`。
-- 远端 `pro14uu`：独立装 `@deepseek-ai/dsh@0.2.0-rc.2` 于 `~/.dsh-runtime`，profile `remote-web`，blue-self 模型通道 + 凭据（**已实测能出话**）。
+| 原能力 | 现在在哪 |
+| --- | --- |
+| 远端会话的读取/删除/配置 | session-hub 的 store 缝隙 + 环境切换（**已实测**：`215` 上读到 18 条会话） |
+| tty 在**侧栏内置终端**里 `ssh -t` | session-hub 的客户端（`openTabFromTarget("terminal")` + 轮询到可写再 `write`），**已并入并有渲染测试** |
+| 远端 `dsh web`（端口转发 + 抓 token） | **放弃**：它的用途是「在本地看远端会话」，而 session-hub 现在直接读远端会话，这条路已无必要 |
+| 远端机器概览 | 由 session-hub 的「⚙ 机器」取代（读 `~/.ssh/config` + 探活 + 每个 agent 的存在性） |
 
-**卡点**：宿主半边第一版死在 `ctx.timer?.interval` —— **未注入就读 Cordis 服务属性会抛**，这种"防御性"写法本身就是错的。已改为 `ctx.get("timer")`，并用**复现该纪律**的桩 Context 把它钉成常驻断言（第一版的桩"礼貌地返回 undefined"，正是它让 bug 溜过验收）。但 dsh **不会**给已加载的宿主模块换世代，所以活着的实例仍跑旧模块、条目停在 `fiberPhase: failed`。
-
-**步骤**：重启 DSH → 看 `include:remote-agent` 是否转 `active` → 刷新页面 → 侧栏 "Remote Agents"。
-
-**验收**（前四条已在一个**一次性 profile 的真实运行时**里验完，只剩第 5 条需要重启桌面应用）：
-
-- [x] 宿主半边在真实 dsh 运行时里激活：启动日志**无** `failed to import` / `pending` 诊断
-- [x] 路由全生命周期：`overview → start → url → stop` 全 ok。`stop` 后 `url` 为 `null`（停机时不下发陈旧 token），`start` 返回 url/token/pid，`url` 复用同一 token 而不重启
-- [x] 客户端半边进 boot 图并被服务：`window.__DSH_BOOT__` 里有 `{"id":"dsh-remote-agent","url":"plugins/??dsh-remote-agent/client.js&rev=…","immediately":true}`，该 URL 返回 200，内容是**本地文件逐字节副本 + sourcemap trailer**
-- [x] 跨实例鉴权不混淆：远端实例的 cookie 拿去打桌面实例得 401（闸门按 `authority` 校验）
-- [x] 内嵌 iframe 的策略层面逐层核实：两侧都无 `X-Frame-Options`、无 CSP、无 meta CSP、无框架自破；auth cookie 是 `SameSite=Strict` 但两端只在端口上不同（site 判定不看端口）故为同站；且**两个 cookie 同时发**（iframe 的真实条件）时各自实例仍 200、外来 cookie 仍被拒
-- [x] 客户端半边**真的渲染过**：`node test/client-render.mjs` 用自写的迷你渲染器（app 无 `react-dom`，仓库也不引开发依赖）把真实组件树 + `overview` fixture 跑了一遍，卡片/徽章/按钮矩阵都执行了。当天抓出两件：我的断言把"禁用"写成"不该存在"（错的是断言），以及**转发端口只存在于 tooltip**（已改为可见徽章）
-- [x] **桌面应用重启后激活成功**：`list_plugins` 里 `include:remote-agent` 从 `failed` 转为 **`active`**（应用确实重启过：桌面 host 进程从 PID 14744 换成 35936）
-- [x] 生成的 `ssh -t` 命令**可粘贴性**已验：用假 `ssh` 让 shell 解析整条字符串，断言 ssh 只收到三个参数、第三个是**一整条**远端命令（`exec "$SHELL" -lic "exec claude"`），并实测该命令在远端解析出 `/home/zakl/.bun/bin/claude`
-- [x] 不可达状态的渲染与文案完整性有测试覆盖（渲染测试第 6/7 节）：主机不可达时用 ssh 原话解释、仍列出 agents、**不把"没问到"说成"没安装"**、一键终端仍可用；并断言用过的 locale key 都存在且 en/zh 键集一致
-- [ ] 侧栏出现 Remote Agents tab；Start → Open 在浏览器里直接是已授权状态（**需要你看一眼**：桌面实例的路由在鉴权闸门后，我拿不到它的 token，所以只能验到"条目 active"）
-- [x] tty 形态一键化：点"在终端打开"复用 Sidebar 内置终端——`sidebarRight.commandTarget(null)` → `openTabFromTarget("terminal", target)` → `webTerminals.view(...)` → **轮询到可写**再 `write(command)`。渲染测试真的点了这个按钮并断言 `openTabFromTarget` 与 `write` 都被调用（失败时断言退化为复制）
-- [x] 修掉一个把"装了"判成"没装"的探测 bug：原先用 `bash -lc` 探测，而 `claude` 在 `~/.bun/bin`（只有**交互式** zsh 的 PATH 里有）。现在探测/可用性/`ssh -t` 一律走 `$SHELL -lic`，并把这些变成常驻回归断言
-- [ ] "复制命令"按一下，剪贴板拿到 `ssh -t pro14uu 'exec "$SHELL" -lic "exec claude"'`
-- [ ] 在面板上点 Codex / Claude Code 行的"在终端打开"，确认本窗口真的开出终端并自动输入了 `ssh -t`（**唯一无法自动验证的一环**：渲染测试证明了调用序列，源码证明了接口形状，但"tab 真的挂载并变成可写"只有浏览器里点一下才知道；失败会退化为复制命令并说明原因）
-
-> **怎么在不重启的情况下验到前五条**：从内置模板生成一次性 profile、`dsh plugin --profile <name> add link:<插件目录>`、另起一个端口启动、用启动日志里的 token 打路由。步骤与三个坑（`?token=` 是 303 必须 `-L`；bundle URL 必须带 `&rev=` 否则 404；curl jar 里 HttpOnly cookie 写成 `#HttpOnly_` 会被 `grep -v '^#'` 滤掉）见插件 [README](plugins/dsh-remote-agent/README.md#不重启也能验临时-profile)。
-
-> 原第 4 条写的"点按钮真的在这里开出终端"**查实后改为复制命令**：终端是内置 Sidebar tab 类型，由侧栏 UI 内部机制驱动（要 `sidebarRight.commandTarget(domElement)` 造 target、`webTerminals.view()` 还要 occurrence key + contentId 才能绑到可见 tab），第三方插件没有受支持的门。理由与源码依据见插件 [README](plugins/dsh-remote-agent/README.md#为什么-tty-形态只复制命令不替你开终端)。
+机器清单已迁移：`pro14uu` 现在写在 session-hub 自己的状态文件里，**在没有 remote-agent 的 profile 里实测仍然出现**（`source: saved`）。插件已从 `desktop` profile 卸载，目录已删除；代码在 git 里（`9a2b0c9`），需要时 `git checkout HEAD -- plugins/dsh-remote-agent`。
 
 ---
+
+## 4b. 测试会被「活动环境是远端」影响（**现象已记，成因未完全查清**）
+
+跑全量时 `delete` / `pins` / `preview` / `reload` 四个套件同时报了
+`list failed: Connection timed out during banner exchange`——**它们去 SSH 了**。重跑就恢复，所以是**偶发**，不是必现。
+
+值得注意的是这些套件**都已经**用 `DSH_SESSION_HUB_HOME` 把插件自己的文件（pins / hook spool / **所选环境**）搬到临时目录了，理论上不该碰远端。两处可疑，都还没验证：
+
+- `delete.mjs` 在 `await import("../index.js")` **之前**设置 `DSH_SESSION_HUB_HOME`，而 `preview.mjs` 是**之后**（第 34 行导入、第 100 行才设置）。如果环境状态在加载/激活时被读一次并缓存，后者的顺序就会让它读**真实**的状态文件——而你当前的活动环境正是 `pro14uu`。
+- 或者只是那台机器当时**时通时不通**（banner 超时本身是网络现象）。
+
+- [ ] 先把各套件的 `DSH_SESSION_HUB_HOME` 统一挪到 **import 之前**，看是否还偶发
+- [ ] 顺带查：环境状态是否在激活时被缓存（若是，应改成每次请求重算，与 `hostCandidates` 一致）
+
+> 中途我曾写过一个 `test/env.mjs` 助手，在 import 时把**真实的** `environment.json` 的 `active` 改成 `local`、退出时还原。**已删除**：它去动使用者真实的文件，而且实测禁用之后四个套件照样全绿——它并没有解决这个问题。
 
 ## 5. `dsh-session-hub` 的 remote 模式（**代码与自动化验收已完成**，桌面端待重启生效）
 
@@ -127,6 +121,7 @@ root    :  session_id=019ed32f…  id=019ed32f…
 
 **剩余（需要你）**：
 
+- [x] **测试不再读你的真实插件状态**：新增 `$DSH_SESSION_HUB_HOME`（默认 `$DSH_HOME/session-hub`），置顶 / hook spool / 记住的环境都从它推。**这条是被真事故逼出来的**：机器清单迁移之后 `environment.json` 里有了 `pro14uu`，于是 6 个测试全部开始在一条断隧道上失败——不是代码回归，是**测试依赖了你上次切到哪台机器**。改的时候又踩第二次：宿主的读取端搬走了、`hook.mjs` 没搬，hook 全被追加进一个没人读的 spool（`preview` 测试当场抓住）。
 - [ ] **重启桌面应用**：宿主半边的新 op（`environment` / `config`）要重启才加载——DSH 不给已加载的宿主模块换世代。**客户端半边会随刷新自动生效**（bundle 是逐字节直接服务的），所以在重启前：环境条不显示、点「配置」会报 `unknown op`（`loadEnvironment` 的失败被吞掉，不会崩）。
 - [ ] 重启后看一眼：面板顶部是否出现 `环境 · 本机 · ⇄ pro14` 的 chip；点 `⇄ pro14` 在 `pro14uu` 通的时候是否列出对面会话、不通时是否给横幅而不是空列表。
 - [x] **机器清单只声明一次**：`dsh-remote-agent` 用 `ctx.provide("remoteHosts", ...)` 发布 `{alias, label, dshHome}`；session-hub 用 `ctx.get("remoteHosts")` 读进来合并成环境，自己的 `cordis.patch.yml` **不再声明 `environments`**（仍保留作为独立运行/覆盖路径，同名时本插件那条赢）。合并是纯函数 `mergeEnvironments()`，测试覆盖「另一个插件发布的机器会变成环境」「同名不重复且本地那条赢」「`local` 不可被冒充」「跨插件边界的 alias 照样过校验」。**两个插件同时装载的一次性 profile 里验过**：session-hub 那行**完全没有 config**，`--dump-config` 里 `environments` 一个字都没有，而 `environment list` 仍返回 `pro14uu`、`set pro14uu` 后 `active.dshHome` 正是发布者给的 `/home/zakl/.dsh`、`list` 依旧 `ok:false` 且无 `sessions`。
@@ -136,7 +131,7 @@ root    :  session_id=019ed32f…  id=019ed32f…
 - [x] **远端慢的三件事**（实测 冷 47.3s→5.3s，热 16.9s→2.0s）：ssh 连接复用（`ControlMaster`+`%C`+`ControlPersist`，1.34s→0.24s/次，放在 `ssh.js` 这个唯一入口）、一次扫描的 stat 只取一次（批量 `statMany` 之后不再逐卡问）、六个源并发取（`mapLimit` 保序，坏源降级为少一个源）。
 - [x] **机器管理**：环境条与右栏都有「⚙ 机器」。候选来自 `~/.ssh/config`（解析别名+HostName/User/Port，**跳过通配符与取反**）、remote-agent 发布的、插件配置的、以及面板自己记的；每行标来源，可启用/停用/测试/编辑/忘记。状态文件升到 v2 且**仍读 v1**；`writeActiveId` 改成读-改-写，否则切机器会抹掉机器列表。关掉正在看的那台会送回本机。`hosts` op **唯一不设可达性护栏**——它是从连不上的机器里出来的路。
 - [x] **补上 README 声称存在、实际不存在的静态检查**：`test/imports.mjs`，两个方向——「用了没导入」（就是当年 `codex.js` 那个被 try/catch 吞掉的 ReferenceError）与「导入了没用」。先剥注释和字面量再分析（否则每句 JSDoc 的 `@property {() => …} readTail` 都会被读成调用）。**它立刻抓出 39 个死导入**（index.js 10 个：`shq`/`homedir`/`UNTITLED`…；五个 adapter 仍整条导入已被搬走的 `node:zlib`/`node:fs` 助手）。写这个检查时自己踩了一次：模板字面量里的 `${shq(x)}` 被整段抹掉，于是它把**还在用的** `shq` 判成死导入并删掉——**另一个方向当场把它抓回来**，这正好证明两个方向都得留。
-- [ ] **移除 `dsh-remote-agent`（下一个大项）**：按「两边都用同一个 client 抽象」的方向重构后，它还剩三样只在那边的能力——远端 `dsh web` 的启动/端口转发/抓 token、**侧栏内置终端**里的 `ssh -t`、远端机器概览。远端 web 模式的价值已被 session-hub 直接读远端会话取代；侧栏终端那条是真实的 UX 缺口。计划：先把侧栏终端按 `host.invocation()` 的方式接上（它现在走 cmux/Terminal.app），再把机器清单迁进 session-hub（否则删掉后 `⇄ pro14` 会从环境条消失），最后卸载。
+- [x] **移除 `dsh-remote-agent`（已完成）**：按「两边都用同一个 client 抽象」的方向重构后，它还剩三样只在那边的能力——远端 `dsh web` 的启动/端口转发/抓 token、**侧栏内置终端**里的 `ssh -t`、远端机器概览。远端 web 模式的价值已被 session-hub 直接读远端会话取代；侧栏终端那条是真实的 UX 缺口。计划：先把侧栏终端按 `host.invocation()` 的方式接上（它现在走 cmux/Terminal.app），再把机器清单迁进 session-hub（否则删掉后 `⇄ pro14` 会从环境条消失），最后卸载。
 
 
 **已知边界（写下来免得当成已处理）**：

@@ -21,11 +21,11 @@
  */
 
 import assert from "node:assert/strict";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { parseSshConfig } from "../environments.js";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import vm from "node:vm";
 
 /* ------------------------------------------------------------------ *
@@ -166,6 +166,18 @@ function textOf(node) {
 /* ------------------------------------------------------------------ *
  * The Host half, so `load()` has something real to talk to
  * ------------------------------------------------------------------ */
+
+/**
+ * Keep this plugin's own files out of the real ones.
+ *
+ * The environment file remembers which machine the panel is pointed at, and this
+ * test reads the real session stores on purpose. Pointing both at the same place
+ * made the suite depend on the person's last switch: the day a remote host
+ * became a saved environment, `list` began failing on a dead tunnel instead of on
+ * what was being tested. Only pins, the hook spool and the chosen environment
+ * move — `sessions/` stays real.
+ */
+process.env.DSH_SESSION_HUB_HOME = await mkdtemp(join(tmpdir(), "dsh-session-hub-state-"));
 
 const host = await import("../index.js");
 let route = null;

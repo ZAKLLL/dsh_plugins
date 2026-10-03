@@ -7,16 +7,14 @@
 #
 # ## Where a remote machine is declared
 #
-# Not here, if `dsh-remote-agent` is installed. That plugin's `hosts` are the
-# machine list — it is the plugin whose job is remote machines, and a host there
-# already names its alias, label and remote `dshHome`. This plugin publishes
-# nothing about machines and instead reads the `remoteHosts` service, folding
-# every published host into its environment switcher. One declaration, two uses.
+# Here, or in `~/.ssh/config`, or from the panel — this plugin owns the machine
+# list. They are merged in that precedence order (configured, then saved, then
+# published, then ssh), and the first source to name an alias describes it, so an
+# entry here also *overrides* one that was probed from ssh config — which is how
+# a probe that got `home` wrong is corrected.
 #
-# `environments` below is the **standalone** path: a composition with no
-# remote-agent still needs a way to say "that other box", and an entry here also
-# *overrides* a published host of the same alias — which is how a probe that got
-# `home` wrong is corrected. Leave it out when remote-agent is present.
+# An entry is only needed for what probbing cannot know: a `dshHome`, a nicer
+# `label`, or a host kept out of `~/.ssh/config`.
 - insert:
     - id: session-hub
       name: dsh-session-hub

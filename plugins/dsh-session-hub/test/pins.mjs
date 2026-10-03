@@ -16,10 +16,11 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, readFile, rmdir, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, readFile, rmdir, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import zlib from "node:zlib";
+
 
 const mod = await import("../index.js");
 
@@ -48,9 +49,23 @@ async function call(payload) {
   return await (await route.fetch(request)).json();
 }
 
-const HOME_DIR = process.env.DSH_HOME || join(homedir(), ".dsh");
-const DSH_ROOT = join(HOME_DIR, "sessions");
-const PIN_DIR = join(HOME_DIR, "session-hub");
+/**
+ * Keep this plugin's own files out of the real ones.
+ *
+ * The environment file remembers which machine the panel is pointed at, and this
+ * test reads the real session stores on purpose. Pointing both at the same place
+ * made the suite depend on the person's last switch: the day a remote host
+ * became a saved environment, `list` began failing on a dead tunnel instead of on
+ * what was being tested. Only pins, the hook spool and the chosen environment
+ * move — `sessions/` stays real.
+ */
+process.env.DSH_SESSION_HUB_HOME = await mkdtemp(join(tmpdir(), "dsh-session-hub-state-"));
+
+const DSH_HOME = process.env.DSH_HOME || join(homedir(), ".dsh");
+/** This plugin's own files, relocated by the scratch above. */
+const STATE_DIR = process.env.DSH_SESSION_HUB_HOME || join(DSH_HOME, "session-hub");
+const DSH_ROOT = join(DSH_HOME, "sessions");
+const PIN_DIR = STATE_DIR;
 const PIN_FILE = join(PIN_DIR, "state.json");
 const SESSION_DIR = join(DSH_ROOT, `-dsh-session-hub-${STAMP}`, SESSION_ID);
 const SESSION_FILE = join(SESSION_DIR, "session.v4.jsonl.zstd");
