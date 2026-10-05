@@ -112,6 +112,11 @@ window.__ModuleLoader__.load({
       focusIn: "Jump to the {terminal} window it is already running in",
       openInVscode: "Open this project in VS Code",
       detailModel: "Model",
+      acpPlaceholder: "Ask {label} …",
+      acpInputHint: "This conversation is held by the agent itself; typing here sends it a turn",
+      acpWhoHint: "Answers come from {label}, which keeps the record",
+      acpSend: "Send",
+      acpStop: "End",
       openWaysTitle: "Open this session",
       wayChat: "Chat in this window",
       wayApp: "Open in {label}",
@@ -297,6 +302,11 @@ window.__ModuleLoader__.load({
       focusIn: "跳到它正在运行的 {terminal} 窗口",
       openInVscode: "用 VS Code 打开这个项目",
       detailModel: "模型",
+      acpPlaceholder: "对 {label} 说…",
+      acpInputHint: "这条对话由原 agent 持有；在这里输入就是给它发一轮",
+      acpWhoHint: "回答来自 {label}，记录也保存在它那边",
+      acpSend: "发送",
+      acpStop: "结束",
       openWaysTitle: "打开方式",
       wayChat: "在这个窗口里对话",
       wayApp: "用 {label} 打开",
@@ -560,6 +570,11 @@ window.__ModuleLoader__.load({
 .sh-way-label{flex:1;min-width:0}
 .sh-way-id{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
 .sh-ways-note{margin-top:2px;line-height:1.5}
+.sh-acp-dock{align-items:center;gap:6px;flex-wrap:wrap;display:flex;width:100%}
+.sh-acp-dock-who{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-secondary);flex:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;padding:1px 6px}
+.sh-acp-dock-input{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-xs);outline:none;flex:1 1 200px;min-width:0;padding:5px 8px;font:inherit;font-size:12px}
+.sh-acp-dock-input:focus{border-color:var(--dsw-alias-brand-primary)}
+.sh-acp-dock-error{color:var(--dsw-alias-state-error-primary);flex-basis:100%;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sh-steps-toggle{border:0;background:0 0;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;align-items:center;gap:5px;padding:2px 0;display:flex;font-size:11px;text-align:left}
 .sh-steps-toggle:hover{color:var(--dsw-alias-label-secondary)}
 .sh-steps-toggle:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:2px;border-radius:var(--dsw-radius-xs)}
@@ -3757,7 +3772,113 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return { Overlay, SidebarTab, DeleteDialog, WayDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog };
+    /**
+     * The dock above the composer.
+     *
+     * Two jobs, both about *this* conversation:
+     *
+     * 1. Forward the composer's session and input actions to the panel, which
+     *    needs them to continue a session here.
+     * 2. When this conversation is backed by an ACP agent, **provide the input
+     *    for it** — because the composer cannot.
+     *
+     * The second job is the interesting one. The Host's own loop drives top-level
+     * sessions, and a session this plugin created has no driver: nothing routes
+     * the composer's submit to it. So the conversation renders natively while the
+     * typing happens here, in the same place. It looks like one composer and is
+     * honestly two — which is why the label says who is answering.
+     */
+    function Bridge(props) {
+      const actions = props?.inputActions ?? null;
+      const sessionId = props?.sessionId ?? null;
+      const live = React.useSyncExternalStore(chats.subscribe, chats.get, chats.get);
+      const [draft, setDraft] = React.useState("");
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+
+      React.useEffect(() => {
+        composer.set({ sessionId, inputActions: actions });
+        return () => {
+          if (composer.get().sessionId === sessionId) composer.set({ sessionId: null, inputActions: null });
+        };
+      }, [sessionId, actions]);
+
+      // A draft belongs to one conversation; carrying it into another would send
+      // the wrong words to the wrong agent.
+      React.useEffect(() => {
+        setDraft("");
+        setError(null);
+      }, [sessionId]);
+
+      const chat = sessionId === null ? undefined : live.get(sessionId);
+      if (chat === undefined) return null;
+
+      const say = async (payload) => {
+        setBusy(true);
+        setError(null);
+        try {
+          const result = await hub("chat", { action: "prompt", key: chat.key, text: payload });
+          if (result.ok !== true) setError(String(result.error ?? "failed"));
+        } catch (caught) {
+          setError(String(caught?.message ?? caught));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const send = () => {
+        const text = draft.trim();
+        if (text === "" || busy) return;
+        setDraft("");
+        void say(text);
+      };
+
+      const stop = async () => {
+        setBusy(true);
+        try {
+          await hub("chat", { action: "stop", key: chat.key });
+          const next = new Map(chats.get());
+          next.delete(sessionId);
+          chats.set(next);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return h(
+        "div",
+        { className: "sh-acp-dock" },
+        h("span", { className: "sh-acp-dock-who", title: t("acpWhoHint", { label: chat.agentLabel }) }, chat.agentLabel),
+        h("input", {
+          className: "sh-acp-dock-input",
+          value: draft,
+          disabled: busy,
+          spellCheck: false,
+          placeholder: t("acpPlaceholder", { label: chat.agentLabel }),
+          title: t("acpInputHint"),
+          "aria-label": t("acpInputHint"),
+          onChange: (event) => setDraft(event.target.value),
+          onKeyDown: (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            send();
+          },
+        }),
+        h(
+          "button",
+          { type: "button", className: "sh-btn", disabled: busy || draft.trim() === "", title: t("acpSend"), "aria-label": t("acpSend"), onClick: send },
+          t("acpSend"),
+        ),
+        h(
+          "button",
+          { type: "button", className: "sh-btn", disabled: busy, title: t("acpStop"), "aria-label": t("acpStop"), onClick: () => void stop() },
+          t("acpStop"),
+        ),
+        error !== null && h("span", { className: "sh-acp-dock-error", title: error }, error),
+      );
+    }
+
+      return { Overlay, SidebarTab, DeleteDialog, WayDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog, Bridge };
     }
 
     /**
@@ -3767,18 +3888,6 @@ window.__ModuleLoader__.load({
      * The composer's `inputActions` are only reachable from a session-scoped
      * slot, so this entry publishes them for the panel to use.
      */
-    function Bridge(props) {
-      const actions = props?.inputActions ?? null;
-      const sessionId = props?.sessionId ?? null;
-      React.useEffect(() => {
-        composer.set({ sessionId, inputActions: actions });
-        return () => {
-          if (composer.get().sessionId === sessionId) composer.set({ sessionId: null, inputActions: null });
-        };
-      }, [sessionId, actions]);
-      return null;
-    }
-
     /**
     /**
     /**
@@ -4136,7 +4245,7 @@ window.__ModuleLoader__.load({
         }, "dsh-session-hub: workspaces face");
       });
 
-      const { Overlay, SidebarTab, DeleteDialog, WayDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog } =
+      const { Overlay, SidebarTab, DeleteDialog, WayDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog, Bridge } =
         makeHub(ctx, t, faces);
 
       // Frame-wide entry + overlay.

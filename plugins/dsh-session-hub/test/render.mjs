@@ -27,6 +27,10 @@ import { join } from "node:path";
 import { parseSshConfig } from "../environments.js";
 import { mkdtemp, readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 /* ------------------------------------------------------------------ *
  * A minimal React
@@ -179,6 +183,29 @@ function textOf(node) {
  */
 process.env.DSH_SESSION_HUB_HOME = await mkdtemp(join(tmpdir(), "dsh-session-hub-state-"));
 
+// The ACP path is exercised end to end with the fake server: no network, no real
+// agent, but the same `chat` op the panel calls.
+process.env.DSH_SESSION_HUB_ACP = JSON.stringify([process.execPath, join(HERE, "fake-acp.mjs")]);
+
+/** Stand-in for the Host's session store, so an opened chat has somewhere to render. */
+const viewSessions = [];
+const fakeSessions = {
+  create(id, options) {
+    const events = [];
+    const session = {
+      id: id ?? `session-${viewSessions.length + 1}`,
+      header: { id: id ?? `session-${viewSessions.length + 1}`, ...(options?.meta ?? {}) },
+      events,
+      append(type, data, opts) {
+        events.push({ type, data, opts });
+        return { type, data };
+      },
+    };
+    viewSessions.push(session);
+    return session;
+  },
+};
+
 const host = await import("../index.js");
 let route = null;
 host.apply({
@@ -189,7 +216,7 @@ host.apply({
       if (typeof dispose === "function") dispose();
     };
   },
-  get: () => undefined,
+  get: (name) => (name === "sessions" ? fakeSessions : undefined),
 });
 assert.ok(route !== null, "the Host half must register its route");
 
@@ -273,6 +300,8 @@ const FAKE_MESSAGES = {
  */
 let answerAsRemote = false;
 
+const openedChatKeys = new Set();
+
 const stubFetch = async (url, init) => {
   if (String(url).includes("/api/session-hub")) {
     const payload = (() => {
@@ -282,6 +311,10 @@ const stubFetch = async (url, init) => {
         return {};
       }
     })();
+    // Remembered so the test can close the conversation it opened: the ACP server
+    // is a real child process, and Node will not exit while one is alive.
+    if (payload.op === "chat" && payload.action !== "stop") openedChatKeys.add(payload.key ?? "");
+
     if (payload.op === "environment" && answerAsRemote) {
       return Response.json({
         ok: true,
@@ -898,8 +931,65 @@ assert.equal(typeof readerModel[0].props.title, "string", "with a tooltip");
     hostElements(picker.tree, "sh-ways-note").length > 0,
     "the picker must say that the conversation stays with the agent",
   );
+/* ---- the dock above the composer ------------------------------------- */
+// "Chat in this window" is only half a feature if nobody can type into it. The
+// conversation renders natively; the input lives in the dock, because a session
+// this plugin created has no driver to route the composer's submit to.
+{
+  // The button's text is label + id concatenated, so match on containment rather
+  // than equality.
+  const chatWay = hostElements(picker.tree, "sh-way").find((button) => textOf(button).includes("wayChat"));
+  assert.ok(chatWay !== undefined, "the picker must offer the chat way for an agent with an ACP server");
+
+  await chatWay.props.onClick();
+  const created = viewSessions[0];
+  assert.ok(created !== undefined, "opening a chat must create the view session it renders in");
+  assert.equal(created.header.agentPreset !== undefined, true, "and record which agent it came from");
+
+  const Bridge = registered.get("conversation.composer.dock#session-hub-bridge");
+  const dock = render(Bridge, { sessionId: created.id, inputActions: null });
+  for (const effect of dock.effects) {
+    const cleanup = effect();
+    if (typeof cleanup === "function") cleanups.push(cleanup);
+  }
+
+  const input = hostElements(dock.tree, "sh-acp-dock-input");
+  assert.equal(input.length, 1, "a live chat must put an input in the dock");
+  // The fake `t` returns raw keys and does not interpolate, so the placeholder is
+  // only checked for being a real string. Who is answering is asserted on the
+  // chip instead — that one renders the actual agent name.
+  assert.ok(typeof input[0].props.placeholder === "string" && input[0].props.placeholder !== "", "with a placeholder");
+  const who = hostElements(dock.tree, "sh-acp-dock-who").map(textOf).join("");
+  assert.ok(/codex/i.test(who), `the dock must name the agent that answers, got ${JSON.stringify(who)}`);
+  assert.equal(typeof input[0].props.title, "string", "and a tooltip saying who holds the conversation");
+  assert.equal(input[0].props.disabled, false, "an idle conversation accepts typing");
+
+  const send = hostElements(dock.tree, "sh-acp-dock").length === 1 ? hostElements(dock.tree, "sh-btn") : [];
+  assert.ok(send.length >= 2, "there must be a send and an end button");
+  assert.equal(send[0].props.disabled, true, "send must be disabled while there is nothing to send");
+  for (const button of send) assert.equal(typeof button.props.title, "string", "every dock button needs a tooltip");
+
+  // And a conversation that is not open must render nothing at all.
+  const idle = render(Bridge, { sessionId: "no-such-session", inputActions: null });
+  assert.equal(hostElements(idle.tree, "sh-acp-dock").length, 0, "a session without a chat must render no dock");
+  console.log(`dock: input for ${created.id}, placeholder names the agent, send disabled while empty`);
+
+  // Close it, so the fake agent's process does not keep this test alive. `route`
+  // is this file's handle on the real Host route — there is no `callHost` here.
+  for (const key of openedChatKeys) {
+    await route.fetch(
+      new Request("http://127.0.0.1/api/session-hub", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "chat", action: "stop", key }),
+      }),
+    );
+  }
+}
+
   console.log(`ways: the picker listed ${buttons.length} ways after ${asked} row(s)`);
 }
+
 
 // ---- every interactive control explains itself ------------------------
 // Walked over everything that actually rendered, not over the source: a source
