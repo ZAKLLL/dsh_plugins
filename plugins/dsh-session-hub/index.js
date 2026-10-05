@@ -23,7 +23,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
-import { chatOps } from "./ops/chat.js";
+import { chatOps, openWaysFor } from "./ops/chat.js";
 import { environmentOps } from "./ops/environment.js";
 import { opRegistry } from "./ops/op.js";
 import dshSource from "./sources/dsh.js";
@@ -985,6 +985,12 @@ async function inventory(force, ctx) {
     return null;
   });
 
+  // How this row can be opened, derived from the adapter's declarations. The
+  // client renders the menu from this rather than deciding anything itself.
+  for (const card of cards) {
+    card.ways = openWaysFor(adapterOf(card.agent), card);
+  }
+
   cards.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   linkFamilies(cards);
   await refreshLive(ctx, cards, force);
@@ -1114,7 +1120,10 @@ function messagesFrom(body) {
   const flush = () => {
     if (role === null) return;
     const text = lines.join("\n").trim();
-    if (text !== "") messages.push({ role, text, at, collapsed });
+    // An empty turn is noise — a `## User` with nothing under it is not a turn.
+    // An empty **compaction** is not noise: the seam itself is the information,
+    // and dropping it would hide that the context was replaced.
+    if (text !== "" || role === "compacted") messages.push({ role, text, at, collapsed });
     lines = [];
   };
   for (const line of String(body ?? "").split("\n")) {
@@ -1706,7 +1715,7 @@ async function openInTerminal(card) {
  * open — falls through to the next, and the default plan is a single terminal
  * step, so a dialect only has to say something when it has more than one option.
  */
-async function openOriginal(value, options) {
+async function openOriginal(value, options = {}) {
   const { card } = value;
   const adapter = adapterOf(card.agent);
 
@@ -1717,7 +1726,15 @@ async function openOriginal(value, options) {
     return { kind: "dsh", sessionId: card.sessionId, command: null, terminal: null };
   }
 
-  const plan = adapter?.openPlan?.(card) ?? [{ kind: "terminal" }];
+  const wholePlan = adapter?.openPlan?.(card) ?? [{ kind: "terminal" }];
+  // A specific way was asked for, so honour exactly that one: the person chose,
+  // and falling through to a different transport would ignore the choice.
+  const via = typeof options.via === "string" ? options.via : null;
+  const plan = via === null ? wholePlan : wholePlan.filter((step) => step.kind === via);
+  if (via !== null && plan.length === 0) {
+    return { ok: false, error: `cannot open this session via ${via}`, ways: openWaysFor(adapter, card) };
+  }
+
   for (const step of plan) {
     if (step.kind === "app") {
       if (typeof step.url !== "string" || step.url === "") continue;
@@ -2739,7 +2756,7 @@ async function dispatch(payload, ctx) {
         ...(await materialize(value, payload?.destDir, payload?.currentSessionId)),
       };
     }
-    return { ok: true, ...(await openOriginal(value, { launch: payload?.launch === true })) };
+    return { ok: true, ...(await openOriginal(value, { launch: payload?.launch === true, via: payload?.via })) };
   }
 
   // A stale Host is the failure this reports most often, so the message names

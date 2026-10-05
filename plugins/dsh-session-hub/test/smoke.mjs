@@ -232,19 +232,22 @@ for (const agent of agents) {
   {
     let role = null;
     let at = null;
+    let collapsed = null;
     let lines = [];
     const flush = () => {
       if (role === null) return;
       const text = lines.join("\n").trim();
-      if (text !== "") sections.push({ role, text, at });
+      if (text !== "" || role === "compacted") sections.push({ role, text, at, collapsed });
       lines = [];
     };
     for (const line of markdown.split("\n")) {
-      const heading = /^## (User|Assistant|Compacted)(?: · (.+))?$/.exec(line.trim());
+      // The same shape the adapters write, token count included.
+      const heading = /^## (User|Assistant|Compacted)(?: · ([^·]+?))?(?: · (\d+) tokens)?$/.exec(line.trim());
       if (heading !== null) {
         flush();
         role = heading[1] === "User" ? "user" : heading[1] === "Assistant" ? "assistant" : "compacted";
         at = heading[2] ?? null;
+        collapsed = heading[3] === undefined ? null : Number(heading[3]);
         continue;
       }
       if (role !== null) lines.push(line);
@@ -319,25 +322,26 @@ for (const agent of agents) {
 
   // Compaction is a seam in the record, not a turn: the summary is what the
   // context was replaced with, and the heading says how much was folded away.
-  const compactedHeadings = (markdown.match(/^## Compacted(?: ·|$)/gm) ?? []).length;
+  // Counted over the SAME window the reader returned. Comparing against the whole
+  // transcript is the trap this file has fallen into three times now: a long
+  // session is served as a tail, and the earlier headings are simply not in it.
   const compactedTurns = turns.body.messages.filter((message) => message.role === "compacted");
   assert.equal(
     compactedTurns.length,
-    compactedHeadings,
-    `${agent}: every compaction heading must become exactly one marker`,
+    window.filter((section) => section.role === "compacted").length,
+    `${agent}: every compaction heading in the window must become exactly one marker`,
   );
   for (const marker of compactedTurns) {
     assert.equal(typeof marker.at, "string", `${agent}: a compaction marker must be placed in time`);
     assert.ok(marker.text.length > 0, `${agent}: and must carry what it was replaced with`);
   }
-  const counts = (markdown.match(/^## Compacted · [^·]+? · \d+ tokens$/gm) ?? []).length;
   assert.equal(
     compactedTurns.filter((marker) => marker.collapsed !== null).length,
-    counts,
+    window.filter((section) => section.collapsed !== null).length,
     `${agent}: a heading stating a token count must carry it through`,
   );
   if (compactedTurns.length > 0) {
-    console.log(`  ${agent}: ${compactedTurns.length} compaction marker(s), ` +
+    console.log(`  ${agent}: ${compactedTurns.length} compaction marker(s) in the window, ` +
       `${compactedTurns.filter((m) => m.collapsed !== null).length} with a token count`);
   }
 

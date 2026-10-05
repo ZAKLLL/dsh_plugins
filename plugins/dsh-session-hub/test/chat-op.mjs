@@ -115,6 +115,39 @@ const orphan = await call({ op: "chat", action: "prompt", key: codex.key, text: 
 check(orphan.ok === false, "prompting a closed conversation must fail, not silently do nothing");
 console.log(`  stop: reported, idempotent, and a closed conversation refuses`);
 
+/* ---- the menu the client renders ------------------------------------ */
+// Ways are derived from declarations, so the panel never decides for itself and
+// never hardcodes a list.
+{
+  const withServer = list.sessions.filter((session) => (session.ways ?? []).some((way) => way.id === "chat"));
+  check(withServer.length > 0, "an agent with an ACP server must offer the chat way");
+  for (const session of list.sessions) {
+    check(Array.isArray(session.ways), "every card must carry its ways");
+    check(
+      session.ways.some((way) => way.id === "terminal"),
+      `${session.agent}: a terminal way must exist for every agent, since it is the default plan`,
+    );
+    check(
+      !(session.ways.some((way) => way.id === "chat") && session.agent === "dsh"),
+      "dsh has no ACP server, so it must not offer a chat",
+    );
+  }
+  const codexWays = (codex.ways ?? []).map((way) => way.id);
+  check(codexWays.includes("app"), `codex declares a deep link, so its ways must include it: ${codexWays}`);
+  console.log(`  ways: ${codexWays.join(" · ")}`);
+}
+
+/* ---- choosing a way, rather than falling through -------------------- */
+{
+  // `chat` is its own op, not an openPlan step — asking `open` for it must be
+  // refused, and the refusal must list what there actually is.
+  const refused = await call({ op: "open", key: codex.key, via: "chat" });
+  check(refused.ok === false, "a way that is not an openPlan step must be refused");
+  check(/via chat/.test(String(refused.error)), `and name it: ${refused.error}`);
+  check(Array.isArray(refused.ways) && refused.ways.length > 0, "and report the ways that do exist");
+  console.log(`  via: an impossible way is refused, with the real ones listed`);
+}
+
 /* ---- the two refusals ----------------------------------------------- */
 const unknown = await call({ op: "chat", action: "open", key: "no-such-session" });
 check(unknown.ok === false && /unknown session/.test(unknown.error), `an unknown key must be refused: ${unknown.error}`);

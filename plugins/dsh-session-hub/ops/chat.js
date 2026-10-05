@@ -68,7 +68,9 @@ export function openWaysFor(adapter, card) {
   const ways = [];
   const acp = acpCommandFor(adapter);
   if (acp !== null) ways.push({ id: "chat", label: "chat", source: acp.source });
-  for (const step of adapter?.openPlan?.(card) ?? []) {
+  // The same default the Host applies: an adapter with no plan can still be
+  // opened in a terminal, so that way exists for every agent.
+  for (const step of adapter?.openPlan?.(card) ?? [{ kind: "terminal" }]) {
     if (step.kind === "app") ways.push({ id: "app", label: step.label ?? "app" });
     if (step.kind === "terminal") ways.push({ id: "terminal", label: "terminal" });
   }
