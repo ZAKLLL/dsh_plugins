@@ -37,6 +37,30 @@ DSH 的聊天框                                            ← GUI
 
 **分工因此自然定了**：`session-hub` 的清单是**持久的索引**（读存储，死会话也在）；DSH 的聊天框是**活的视图**（走 ACP，重启就没了，但能重建）。重启后 DSH 侧边栏里那条会话消失是正常的——**它还在你的面板里**。
 
+### 边界：插件**不能**成为顶层会话的驱动者（已查实）
+
+这是花了力气才查清的，**别再重新调研**：
+
+| 事实 | 依据 |
+| --- | --- |
+| **`Agent` 接口只有 `{ readonly id }`** | `.ref/` 里的 DSH 生成类型——它没有驱动方法 |
+| **loop 独占 `AgentFactory`** | agent-loop 的 README：*It registers itself as the `AgentFactory` on `ctx.agents`*；且 `setFactory` **已注册就抛** |
+| **`agent/request` 只换配置** | 事件文档：替换 `LlmCallConfig`，且 *cannot mutate messages*——**供不了模型响应** |
+| **输入框走 `sessionController`** | 它拥有 `@Remote('prompt') prompt(SessionPromptRequest)` |
+| **只有 subagent provider 收得到 prompt** | `subagents.registerProvider` + `@Remote('prompt')` |
+
+所以「**在主输入框打字 → 我的 ACP 会话回答**」**不是插件能做的** ✗。我先前说「(a) 技术上成立」是**错的**——那只证明了「能往会话里写事件」（渲染 ✓），没证明「能接到人的话」✗。
+
+**能做的组合**（也是唯一可组合的）：
+
+```
+显示   插件创建会话并把 ACP 事件写进去 → DSH 原生渲染        ✓ 可用
+输入   插件通过 conversation.composer.dock 渲染自己的输入框  ✓ 可用（该槽已在本插件用着）
+接收   subagents.registerProvider + @Remote('prompt')        ✓ 唯一能收到 prompt 的口子
+```
+
+也就是说：**显示用 DSH 的聊天框，输入由插件自己提供**——输入框就在输入区里，观感与原生一致 ✓ 但它由插件拥有 ✓
+
 ### 两个模块，两个职责
 
 | 模块 | 做什么 | 怎么测 |

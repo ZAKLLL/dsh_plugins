@@ -136,7 +136,20 @@ schema.json**、流式 `session/update`、`session/request_permission` 走注入
 `surfaceOp:"append"`、`MessageBase` 三件套），**纯函数 + 鸭子类型 append**，39 条断言
 不需要 DSH 在跑。字段形状取自 `.ref/` 的 DSH 生成类型。
 
+**边界（已查实，别再调研）**：插件**不能**成为顶层会话的驱动者——loop 独占
+`AgentFactory`（`setFactory` 已注册就抛）、`Agent` 只有 `{id}`、`agent/request` 只换
+配置不能供响应、输入框走 `sessionController.prompt`。所以「在主输入框打字 → 我的 ACP
+会话回答」**做不到**。可组合的只有：**显示**用插件创建的会话（DSH 原生渲染）+ **输入**
+由插件在 `conversation.composer.dock` 里自己渲染 + **接收**走
+`subagents.registerProvider`（唯一能收到 prompt 的口子）。
+
 **下一步（按依赖顺序）**：
+- [ ] 宿主侧把 `chat.js` 接上：`ctx.get("sessions")` + 起 ACP（`spawnChild` 先用
+      `node:child_process`，**核实 `SubprocessHandle` 形状后再换 `subprocess`**）
+- [ ] 输入：在 composer dock 里渲染一个「对 codex 说…」的输入框
+- [ ] 入口：会话行的「打开」弹出方式选择（见下）
+- [ ] 方式选择：点击后列出可用方式（聊天框 / 原生 app / 终端），**由声明推导**
+      （`acp` 声明决定第一项是否存在，`openPlan` 决定其余）
 
 - [x] ~~先定「谁拥有会话」~~ —— **已消解**：DSH 是视图，不落盘
 - [x] **已用真 agent 验完**（`tools/acp-probe.mjs`）：**原生 id 就是 ACP 的 id**、
@@ -145,7 +158,7 @@ schema.json**、流式 `session/update`、`session/request_permission` 走注入
       **仍未验**：`session/load` 之后 agent 是否把**历史**回放成 `session/update`——
       上面只验到「load 成功返回」，没验回放内容。
 - [ ] 宿主侧接上：`sessions.create()` + `acp.loadSession()` + `view.js` 的 append（`onUpdate` 已有回调）
-- [ ] 入口：会话行点「在聊天框继续」→ 建视图 + load + 开始 append
+
 - [ ] 用 `subprocess` 起进程（**先核实 `SubprocessHandle` 的形状再替换 `node:child_process`**，
       现在 `spawnChild` 是注入的，所以替换是一行）
 - [ ] `session/request_permission` 接到 DSH 的 `approval.request`
