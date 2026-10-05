@@ -853,6 +853,20 @@ assert.equal(readerModel.length, 1, "the reader must name the model");
 assert.ok(textOf(readerModel[0]).length > 0, "and the name must not be empty");
 assert.equal(typeof readerModel[0].props.title, "string", "with a tooltip");
 
+// ---- every interactive control explains itself ------------------------
+// Walked over everything that actually rendered, not over the source: a source
+// grep cannot see which branch ran, and its window cuts off mid-props.
+const buttons = flatten(second.tree).filter((node) => node.type === "button");
+assert.ok(buttons.length > 0, "the panel must render buttons");
+const bare = buttons.filter((node) => typeof node.props?.title !== "string" || node.props.title === "");
+if (bare.length > 0) {
+  const where = bare
+    .map((node) => `${String(node.props?.className ?? "?")}[${JSON.stringify(textOf(node).slice(0, 24))}]`)
+    .join(", ");
+  assert.equal(bare.length, 0, `${bare.length} of ${buttons.length} buttons have no tooltip: ${where}`);
+}
+console.log(`tooltips: all ${buttons.length} rendered buttons explain themselves`);
+
 // ---- which model answered last ---------------------------------------
 // Read from the end of each store during the scan, so it is on the row itself
 // rather than only in the live detail panel.

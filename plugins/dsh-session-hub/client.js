@@ -112,6 +112,14 @@ window.__ModuleLoader__.load({
       focusIn: "Jump to the {terminal} window it is already running in",
       openInVscode: "Open this project in VS Code",
       detailModel: "Model",
+      modeListHint: "Every session found on this machine, grouped",
+      modeLiveHint: "What the agents are doing right now",
+      filterAllHint: "Do not filter by agent",
+      filterAgentHint: "Only sessions from {label}",
+      groupHint: "How sessions are grouped",
+      onlyRunningHint: "Only agents that are running right now",
+      moreHint: "Show {n} more",
+      lessHint: "Collapse back to the first page",
       stepsCount: "{n} intermediate steps",
       compacted: "Context compacted here",
       showSummary: "Show what it was replaced with",
@@ -283,6 +291,14 @@ window.__ModuleLoader__.load({
       focusIn: "跳到它正在运行的 {terminal} 窗口",
       openInVscode: "用 VS Code 打开这个项目",
       detailModel: "模型",
+      modeListHint: "这台机器上找到的全部会话，按组列出",
+      modeLiveHint: "各个 agent 此刻在做什么",
+      filterAllHint: "不按 agent 筛选",
+      filterAgentHint: "只看 {label} 的会话",
+      groupHint: "会话的分组方式",
+      onlyRunningHint: "只看此刻正在运行的 agent",
+      moreHint: "再显示 {n} 条",
+      lessHint: "收起到第一页",
       stepsCount: "{n} 条中间过程",
       compacted: "上下文在此被压缩",
       showSummary: "查看压缩后替换成了什么",
@@ -2756,6 +2772,7 @@ window.__ModuleLoader__.load({
                   {
                     type: "button",
                     className: `sh-chip${agentFilter === null ? " sh-chip-on" : ""}`,
+                    title: t("filterAllHint"),
                     onClick: () => setAgentFilter(null),
                   },
                   t("all"),
@@ -2768,6 +2785,9 @@ window.__ModuleLoader__.load({
                       key: agent.id,
                       type: "button",
                       className: `sh-chip${agentFilter === agent.id ? " sh-chip-on" : ""}`,
+                      // It toggles, so the tooltip says so — otherwise clicking
+                      // again and watching the filter clear looks like a bug.
+                      title: t("filterAgentHint", { label: agent.label ?? agent.id }),
                       onClick: () => setAgentFilter(agentFilter === agent.id ? null : agent.id),
                     },
                     agent.label,
@@ -2789,6 +2809,7 @@ window.__ModuleLoader__.load({
                       key: value,
                       type: "button",
                       className: `sh-chip${group === value ? " sh-chip-on" : ""}`,
+                      title: t("groupHint"),
                       onClick: () => setGroup(value),
                     },
                     label,
@@ -2799,6 +2820,7 @@ window.__ModuleLoader__.load({
                   {
                     type: "button",
                     className: `sh-chip${onlyRunning ? " sh-chip-on" : ""}`,
+                    title: t("onlyRunningHint"),
                     onClick: () => setOnlyRunning((current) => !current),
                   },
                   t("onlyRunning"),
@@ -2806,12 +2828,12 @@ window.__ModuleLoader__.load({
                 ),
                 h(
                   "button",
-                  { type: "button", className: "sh-chip", onClick: () => configOpen.set(true) },
+                  { type: "button", className: "sh-chip", title: t("configHint"), onClick: () => configOpen.set(true) },
                   t("configMode"),
                 ),
                 h(
                   "button",
-                  { type: "button", className: "sh-chip", onClick: () => hostsOpen.set(true) },
+                  { type: "button", className: "sh-chip", title: t("hostsHint"), onClick: () => hostsOpen.set(true) },
                   t("hostsMode"),
                 ),
                 variant === "sidebar" &&
@@ -2981,6 +3003,7 @@ window.__ModuleLoader__.load({
                                 {
                                   type: "button",
                                   className: "sh-more",
+                                  title: hidden > 0 ? t("moreHint", { n: PAGE_SIZE }) : t("lessHint"),
                                   onClick: () =>
                                     setShown((current) => {
                                       const next = new Map(current);
@@ -3088,6 +3111,9 @@ window.__ModuleLoader__.load({
                   type: "button",
                   role: "tab",
                   "aria-selected": mode === value,
+                  // The two tabs look alike and their labels are one word each;
+                  // say what they actually show.
+                  title: value === "live" ? t("modeLiveHint") : t("modeListHint"),
                   className: `sh-chip${mode === value ? " sh-chip-on" : ""}`,
                   onClick: () => setMode(value),
                 },
