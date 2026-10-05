@@ -322,8 +322,30 @@ check(localCount > 0, "this machine has sessions to compare against");
 const switched = await call({ op: "environment", action: "set", id: "unreachable" });
 check(switched.body.ok === true, `switching must answer: ${JSON.stringify(switched.body)}`);
 check(switched.body.active.id === "unreachable", "the switch must take effect");
-check(switched.body.active.reachable === false, "an unresolvable host must report unreachable");
-check(typeof switched.body.active.error === "string" && switched.body.active.error !== "", "the failure must be explained");
+// The choice lands before the network answers, so the verdict on reachability is
+// the business of the action whose whole purpose is the answer.
+const probedUnreachable = await call({ op: "environment", action: "probe" });
+check(probedUnreachable.body.active.reachable === false, "an unresolvable host must report unreachable");
+
+// The panel prints what a switch is doing while it waits, so the log must be
+// readable straight away and must name the machine it is reaching for.
+const progress = switched.body.progress;
+check(progress !== null && typeof progress === "object", "a switch must open a progress log");
+check(progress.id === "unreachable", "the log must name the environment it is reaching");
+check(Array.isArray(progress.steps) && progress.steps.length > 0, "and start with at least the ssh it is about to run");
+for (const step of progress.steps) {
+  check(typeof step.text === "string" && step.text !== "", "every step must say something");
+  check(["info", "ok", "error"].includes(step.level), `unknown step level: ${step.level}`);
+}
+check(progress.steps.some((step) => step.text.includes("ssh")), "the log must show the ssh it is using");
+const midFlight = await call({ op: "environment", action: "status" });
+check(midFlight.body.ok === true, "status must answer while a switch is in flight");
+check(midFlight.body.progress !== null, "and carry the log");
+check(midFlight.body.active.id === "unreachable", "and the environment already chosen");
+check(
+  typeof probedUnreachable.body.active.error === "string" && probedUnreachable.body.active.error !== "",
+  "the failure must be explained once the probe has answered",
+);
 
 const remoteList = await call({ op: "list" });
 check(remoteList.body.ok === false, "a store read on an unreachable environment must be refused");

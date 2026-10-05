@@ -215,11 +215,12 @@ for (const agent of agents) {
   const sections = [];
   {
     let role = null;
+    let at = null;
     let lines = [];
     const flush = () => {
       if (role === null) return;
       const text = lines.join("\n").trim();
-      if (text !== "") sections.push({ role, text });
+      if (text !== "") sections.push({ role, text, at });
       lines = [];
     };
     for (const line of markdown.split("\n")) {
@@ -227,6 +228,7 @@ for (const agent of agents) {
       if (heading !== null) {
         flush();
         role = heading[1] === "User" ? "user" : heading[1] === "Assistant" ? "assistant" : "compacted";
+        at = heading[2] ?? null;
         continue;
       }
       if (role !== null) lines.push(line);
@@ -280,13 +282,24 @@ for (const agent of agents) {
 
   // Every turn says when it happened. The stamp rides on the heading so a turn
   // and its time cannot drift apart.
+  // Not every store records a time on every event — a Codex rollout can carry
+  // `response_item`s with no `timestamp` at all — so the invariant is that the
+  // stamps survive the round trip, not that every turn has one. And it has to be
+  // counted over the same window the reader returned: a truncated read is the
+  // tail of the conversation, not all of it.
   const stamped = turns.body.messages.filter((message) => typeof message.at === "string");
+  const window = turns.body.truncated === true ? sections.slice(sections.length - turns.body.messages.length) : sections;
   assert.equal(
     stamped.length,
-    turns.body.messages.length,
-    `${agent}: every turn must carry the moment it happened`,
+    window.filter((section) => typeof section.at === "string").length,
+    `${agent}: every heading that names a time must become a turn that carries it`,
   );
-  assert.match(stamped[0].at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `${agent}: the stamp must be a readable local time`);
+  // No separate "there must be at least one" check: a Codex rollout can record no
+  // timestamps anywhere, and then the honest count is zero on both sides. The
+  // equality above is what has teeth — it fails the moment a stamp is dropped.
+  for (const message of stamped) {
+    assert.match(message.at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `${agent}: a stamp must be a readable local time, got ${message.at}`);
+  }
 
   // Compaction is a seam in the record, not a turn: the summary is what the
   // context was replaced with, and the heading says how much was folded away.

@@ -491,7 +491,11 @@ async function call(payload) {
 
 const switched = await call({ op: "environment", action: "set", id: "fake" });
 check(switched.body.ok === true, `the switch must answer: ${JSON.stringify(switched.body).slice(0, 300)}`);
-check(switched.body.active.reachable === true, `the fake remote must be reachable: ${JSON.stringify(switched.body.active)}`);
+check(switched.body.active.id === "fake", "the switch must take effect at once");
+// Switching no longer waits on the probe — that is what made a click against a
+// dead tunnel look like a freeze — so ask explicitly for the verdict here.
+const probedFake = await call({ op: "environment", action: "probe" });
+check(probedFake.body.active.reachable === true, `the fake remote must be reachable: ${JSON.stringify(probedFake.body.active)}`);
 
 const remote = await call({ op: "list" });
 check(remote.body.ok === true, `the remote list must work: ${JSON.stringify(remote.body).slice(0, 400)}`);
@@ -671,6 +675,7 @@ check(!local.body.sessions.some((card) => card.agent === "claude" && card.file =
 // out before it can observe anything over there.
 const toRemote = await call({ op: "environment", action: "set", id: "fake" });
 check(toRemote.body.ok === true, "the fake machine must be selectable again");
+await call({ op: "environment", action: "probe" });
 
 const psFile = join(scratch, "remote-ps.txt");
 await writeFile(psFile, "  4242 00:30 /bin/sh /tmp/gemini --resume remote-gemini-1\n", "utf8");

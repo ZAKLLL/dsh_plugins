@@ -155,6 +155,8 @@ window.__ModuleLoader__.load({
       environmentHint: "Which machine's sessions are shown.",
       envUnreachable: "{label} is unreachable",
       envBack: "Switch back to this machine",
+      envConnecting: "Connecting to {label}…",
+      envWaiting: "handing over to ssh…",
       envRetry: "Retry the connection",
       envProblems: "Some configured environments were rejected: {message}",
       envUnreachableMark: "unreachable",
@@ -324,6 +326,8 @@ window.__ModuleLoader__.load({
       environmentHint: "当前显示哪台机器的会话。",
       envUnreachable: "{label} 连不上",
       envBack: "切回本机",
+      envConnecting: "正在连接 {label}…",
+      envWaiting: "交给 ssh…",
       envRetry: "重试连接",
       envProblems: "有环境配置被拒绝：{message}",
       envUnreachableMark: "连不上",
@@ -571,6 +575,15 @@ window.__ModuleLoader__.load({
 .sh-env{flex:none;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;display:flex}
 .sh-env-label{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10.5px;line-height:16px;text-transform:uppercase;letter-spacing:.06em}
 .sh-env .sh-chips{flex-wrap:wrap}
+.sh-env-progress{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;flex-basis:100%;flex-direction:column;gap:4px;padding:7px 10px;display:flex}
+.sh-env-progress-head{color:var(--dsw-alias-label-primary);align-items:center;gap:7px;font-size:11.5px;font-weight:600;display:flex}
+.sh-env-spinner{border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-brand-primary);border-radius:50%;width:11px;height:11px;flex:none;animation:sh-spin .8s linear infinite}
+@keyframes sh-spin{to{transform:rotate(360deg)}}
+.sh-env-log{flex-direction:column;gap:1px;max-height:120px;overflow-y:auto;display:flex}
+.sh-env-log-line{color:var(--dsw-alias-label-secondary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;word-break:break-all}
+.sh-env-log-error{color:var(--dsw-alias-state-error-primary)}
+.sh-env-log-ok{color:var(--dsw-alias-state-success-primary)}
+.sh-env-log-at{color:var(--dsw-alias-label-tertiary);margin-right:6px}
 .sh-env-warn{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-state-error-primary);border-radius:8px;color:var(--dsw-alias-label-primary);flex-basis:100%;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;font-size:11.5px;display:flex}
 .sh-env-warn-text{color:var(--dsw-alias-state-error-primary);font-weight:600;flex:none}
 .sh-env-warn-detail{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;min-width:0;flex:1 1 200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1771,6 +1784,7 @@ window.__ModuleLoader__.load({
       function EnvironmentBar() {
         const state = React.useSyncExternalStore(environment.subscribe, environment.get, environment.get);
         const [busy, setBusy] = React.useState(false);
+        const [switching, setSwitching] = React.useState(null);
 
         React.useEffect(() => {
           loadEnvironment(false).catch(() => {});
@@ -1780,17 +1794,43 @@ window.__ModuleLoader__.load({
         if (state === null || !hasRemote) return null;
 
         const active = state.active ?? null;
+        const envLabel = (snapshot, id) =>
+          (snapshot.environments ?? []).find((entry) => entry.id === id)?.label ?? id;
         const unreachable = active !== null && active.reachable !== true;
 
         const go = async (id) => {
           if (busy || id === active?.id) return;
           setBusy(true);
+          setSwitching({ id, steps: [] });
+
+          // Reaching another machine is several seconds of ssh, so the panel
+          // prints what it is doing rather than going quiet. Polling a second
+          // request is what makes that possible: the switch is still in flight
+          // while these land, and the Host is answering both.
+          let watching = true;
+          const watch = (async () => {
+            while (watching) {
+              await new Promise((resolve) => setTimeout(resolve, 300));
+              if (!watching) break;
+              try {
+                const status = await hub("environment", { action: "status" });
+                setSwitching({ id, steps: status?.progress?.steps ?? [] });
+                if (status?.progress !== null && status?.progress?.finishedAt !== null) break;
+              } catch {
+                break;
+              }
+            }
+          })();
+
           try {
             await switchEnvironment(id);
           } catch (caught) {
             say(String(caught?.message ?? caught), true);
           } finally {
+            watching = false;
+            await watch;
             setBusy(false);
+            setSwitching(null);
           }
         };
 
@@ -1826,6 +1866,30 @@ window.__ModuleLoader__.load({
               `⚙ ${t("hostsMode")}`,
             ),
           ),
+          switching !== null &&
+            h(
+              "div",
+              { className: "sh-env-progress" },
+              h(
+                "span",
+                { className: "sh-env-progress-head" },
+                h("span", { className: "sh-env-spinner", "aria-hidden": true }),
+                t("envConnecting", { label: envLabel(state, switching.id) }),
+              ),
+              h(
+                "div",
+                { className: "sh-env-log" },
+                (switching.steps.length === 0 ? [{ level: "info", text: t("envWaiting") }] : switching.steps).map(
+                  (step, index) =>
+                    h(
+                      "div",
+                      { key: index, className: `sh-env-log-line sh-env-log-${step.level ?? "info"}` },
+                      typeof step.at === "number" && h("span", { className: "sh-env-log-at" }, new Date(step.at).toLocaleTimeString()),
+                      step.text,
+                    ),
+                ),
+              ),
+            ),
           unreachable &&
             h(
               "div",

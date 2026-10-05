@@ -1799,6 +1799,8 @@ const environmentState = {
   probe: null,
   error: null,
   restoring: null,
+  /** The live log of reaching an environment, or null when nothing is happening. */
+  progress: null,
 };
 
 /**
@@ -1994,11 +1996,60 @@ async function openOnRemote(card, adapter, environment, { launch = false } = {})
  * paths through the remote store, or worse, read this machine's files while the
  * panel claims to show another one.
  */
-async function activateEnvironment(id, { force = false } = {}) {
+/**
+ * Record one step of reaching an environment, for the panel to print.
+ *
+ * Reaching another machine is a handful of steps that each take seconds, and a
+ * switch that shows nothing for twelve of them reads as a freeze. These are the
+ * same lines that would go to a terminal — the point is that the person can see
+ * *why* it is taking that long, not merely that it is.
+ */
+function progressStep(level, text) {
+  const progress = environmentState.progress;
+  if (progress === null) return;
+  progress.steps.push({ at: Date.now(), level, text });
+  // A probe that retries must not grow this without bound.
+  if (progress.steps.length > 80) progress.steps.splice(0, progress.steps.length - 80);
+}
+
+/** Start a fresh progress log for `environment`, ending whatever came before. */
+function progressBegin(environment) {
+  environmentState.progress = {
+    id: environment.id,
+    alias: environment.alias,
+    label: environment.label,
+    kind: environment.kind,
+    startedAt: Date.now(),
+    finishedAt: null,
+    steps: [],
+  };
+}
+
+/**
+ * Point the plugin at an environment.
+ *
+ * Switching is two different things wearing one hat: **the person's choice**,
+ * which is instant, and **whether that machine answers**, which is a network
+ * fact that can take twelve seconds. Making the choice wait on the fact is what
+ * made a click feel like a freeze — against a machine behind a dead tunnel the
+ * panel simply stopped responding until SSH gave up.
+ *
+ * So a deliberate switch applies immediately on what the catalogue already
+ * knows (each entry carries its own `home`/`dshHome`), and the probe runs
+ * afterwards to confirm it. `wait` is for the callers that genuinely cannot
+ * proceed without an answer: restoring the remembered environment before the
+ * first store read, and the explicit "test this machine" action.
+ */
+async function activateEnvironment(id, { force = false, wait = true } = {}) {
   const environment = findEnvironment(environmentState.list, id) ?? LOCAL_ENVIRONMENT;
   environmentState.activeId = environment.id;
 
+  progressBegin(environment);
+  progressStep("info", `ssh ${environment.alias}`);
+
   if (environment.kind === "local") {
+    progressStep("ok", "this machine — nothing to connect to");
+    environmentState.progress.finishedAt = Date.now();
     setEnvironmentScope(null);
     setHost(localHost);
     environmentState.probe = null;
@@ -2006,14 +2057,56 @@ async function activateEnvironment(id, { force = false } = {}) {
     return environmentState;
   }
 
-  const probe = await probeEnvironment(environment, { force });
-  const homes = resolveHomes(environment, probe);
-  environmentState.probe = probe;
-  setEnvironmentScope(homes);
-  // One object for both halves: bytes and commands follow the same environment.
-  setHost(createRemoteHost({ id: environment.id, label: environment.label, alias: environment.alias }));
-  environmentState.error =
-    probe.reachable && homes !== null ? null : probe.error ?? `cannot resolve $HOME on ${environment.alias}`;
+  const settle = async () => {
+    progressStep("info", "probing over ssh…");
+    const probe = await probeEnvironment(environment, { force });
+
+    // This can run in the background, so by the time it answers the person may
+    // have switched again. A late probe must never land on top of the newer
+    // choice — that would silently move every path back to the machine they
+    // just left.
+    if (environmentState.activeId !== environment.id) return environmentState;
+
+    const homes = resolveHomes(environment, probe);
+    environmentState.probe = probe;
+    setEnvironmentScope(homes);
+    // One object for both halves: bytes and commands follow the same environment.
+    setHost(createRemoteHost({ id: environment.id, label: environment.label, alias: environment.alias }));
+    environmentState.error =
+      probe.reachable && homes !== null ? null : probe.error ?? `cannot resolve $HOME on ${environment.alias}`;
+    if (probe.reachable && homes !== null) {
+      progressStep("ok", `connected · home=${homes.home} · dsh=${homes.dshHome}`);
+      progressStep("info", `agents found: ${Array.isArray(probe.agents) && probe.agents.length > 0 ? probe.agents.join(", ") : "none"}`);
+    } else {
+      progressStep("error", environmentState.error);
+    }
+    environmentState.progress.finishedAt = Date.now();
+    return environmentState;
+  };
+
+  if (wait) return settle();
+
+  const homes = resolveHomes(environment, null);
+  if (homes === null) {
+    // Nothing in the catalogue says where its `sessions/` live, so there is
+    // nothing to point at until the probe answers — say so rather than guess.
+    setEnvironmentScope(null);
+    setHost(localHost);
+    environmentState.probe = null;
+    environmentState.error = `resolving ${environment.alias}…`;
+  } else {
+    setEnvironmentScope(homes);
+    setHost(createRemoteHost({ id: environment.id, label: environment.label, alias: environment.alias }));
+    environmentState.probe = null;
+    environmentState.error = null;
+  }
+
+  // Deliberately not awaited: the click has already landed, and this only
+  // refines it. A rejection here must not become an unhandled one.
+  void settle().catch((error) => {
+    progressStep("error", String(error?.message ?? error));
+    environmentState.progress.finishedAt = Date.now();
+  });
   return environmentState;
 }
 
@@ -2191,16 +2284,29 @@ async function dispatch(payload, ctx) {
         problems: environmentState.problems,
       };
     }
+    // The switch can take a dozen seconds; this is what the panel polls while it
+    // waits, so the wait can say what it is waiting for.
+    if (action === "status") {
+      return {
+        ok: true,
+        progress: environmentState.progress,
+        active: describeEnvironment(),
+        environments: environmentCatalogue(),
+      };
+    }
+
     if (action === "set" || action === "probe") {
       const id = action === "set" && typeof payload?.id === "string" ? payload.id : environmentState.activeId;
       if (findEnvironment(environmentState.list, id) === null) {
         return { ok: false, error: `unknown environment: ${id}`, environments: environmentCatalogue() };
       }
-      await activateEnvironment(id, { force: true });
+      // `set` lands at once and lets the probe catch up; `probe` is the action
+      // whose whole point is the answer, so it waits.
+      await activateEnvironment(id, { force: true, wait: action === "probe" });
       // Only a deliberate switch is remembered; a failed reconnect must not
       // overwrite the last good choice with the machine that is still down.
       if (action === "set") await writeActiveId(id);
-      return { ok: true, active: describeEnvironment(), environments: environmentCatalogue() };
+      return { ok: true, progress: environmentState.progress, active: describeEnvironment(), environments: environmentCatalogue() };
     }
     return { ok: false, error: `unknown environment action: ${action}` };
   }
