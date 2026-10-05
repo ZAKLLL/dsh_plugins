@@ -12,6 +12,12 @@
 
 ---
 
+## 架构
+
+![架构图](docs/architecture.svg)
+
+> 矢量图在 [`docs/architecture.svg`](docs/architecture.svg)，可缩放、可直接改。图里刻意画出来的三件事：**唯一一条路由**、**store 缝隙**（换机器不需要动 adapter）、**契约在加载时校验**。
+
 ## 架构：一个声明式 adapter 层
 
 宿主半边**不按 agent 分支**。`index.js` 里没有任何 `card.agent === "..."`，也没有 `AGENT_LABELS` / `AGENT_EXECUTABLES` / `SPAWN_COMMANDS` 这类平行表——**所有针对某一个 agent 的知识都在 `sources/<agent>.js` 里**，由一个声明式接口约束。

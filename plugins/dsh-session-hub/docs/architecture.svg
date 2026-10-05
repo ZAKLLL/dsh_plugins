@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="830" viewBox="0 0 1160 830" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB',sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5b6478"/>
+    </marker>
+    <style>
+      .t { fill: #e6e8ee; }
+      .d { fill: #9aa3b2; }
+      .f { fill: #6f7889; }
+      .mono { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+      .box { fill: #171a21; stroke: #2a2f3a; stroke-width: 1; }
+      .lane { fill: #12151b; stroke: #2a2f3a; stroke-width: 1; }
+      .h { font-size: 13.5px; font-weight: 600; }
+      .s { font-size: 11.5px; }
+      .xs { font-size: 10.5px; }
+      .lbl { font-size: 10px; letter-spacing: .08em; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1160" height="830" fill="#0f1115"/>
+
+  <text x="44" y="42" class="t" font-size="17" font-weight="700">dsh-session-hub · 架构</text>
+  <text x="44" y="63" class="d" font-size="11.5">一个面板，六个 agent，两种运行位置。宿主里没有任何一处按 agent 分支。</text>
+
+  <text x="44" y="100" class="f lbl">浏览器 · 客户端半边</text>
+  <rect x="44" y="110" width="1072" height="120" rx="10" class="box"/>
+  <text x="66" y="134" class="t h mono">client.js</text>
+  <text x="146" y="134" class="d s">8 个挂载点 · 不 import 任何 Harness 客户端包，图标自己画</text>
+
+  <rect x="66" y="148" width="244" height="66" rx="7" class="lane"/>
+  <text x="80" y="169" class="t s">右侧栏 Tab</text>
+  <text x="80" y="186" class="d xs">列表 / 实时 两个模式</text>
+  <text x="80" y="202" class="d xs">侧栏底部与 overlay 同一份</text>
+
+  <rect x="322" y="148" width="244" height="66" rx="7" class="lane"/>
+  <text x="336" y="169" class="t s">阅读器</text>
+  <text x="336" y="186" class="d xs">按 turn 分组 · 中间过程折叠</text>
+  <text x="336" y="202" class="d xs">markdown 渲染 · 压缩可见</text>
+
+  <rect x="578" y="148" width="244" height="66" rx="7" class="lane"/>
+  <text x="592" y="169" class="t s">实时卡片</text>
+  <text x="592" y="186" class="d xs">谁在跑 · 在等什么 · 耗时</text>
+  <text x="592" y="202" class="d xs">模型与 token 用量</text>
+
+  <rect x="834" y="148" width="260" height="66" rx="7" class="lane"/>
+  <text x="848" y="169" class="t s">拖进对话</text>
+  <text x="848" y="186" class="d xs">text/plain = 转录</text>
+  <text x="848" y="202" class="d xs">附件 = 原始会话文件</text>
+
+  <line x1="580" y1="230" x2="580" y2="268" stroke="#5b6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="400" y="238" width="360" height="24" rx="6" fill="#12151b" stroke="#2a2f3a"/>
+  <text x="580" y="254" class="d mono xs" text-anchor="middle">POST /api/session-hub   { op, … }</text>
+  <text x="776" y="254" class="f xs">唯一一条路由</text>
+
+  <text x="44" y="294" class="f lbl">宿主半边</text>
+  <rect x="44" y="304" width="1072" height="198" rx="10" class="box"/>
+  <text x="66" y="328" class="t h mono">index.js</text>
+  <text x="146" y="328" class="d s">18 个 op 由 op 名分发 · 零处 card.agent === "…"</text>
+
+  <rect x="66" y="342" width="244" height="144" rx="7" class="lane"/>
+  <text x="80" y="363" class="t s">清单与实时</text>
+  <text x="80" y="382" class="d xs mono">list · status · preview</text>
+  <text x="80" y="398" class="d xs mono">models · messages</text>
+  <text x="80" y="420" class="d xs">扫描各 agent 的存储</text>
+  <text x="80" y="436" class="d xs">进程表 + cmux → 存活</text>
+  <text x="80" y="452" class="d xs">尾部读 → 当前模型</text>
+  <text x="80" y="474" class="f xs">增量读，按字节偏移缓存</text>
+
+  <rect x="322" y="342" width="244" height="144" rx="7" class="lane"/>
+  <text x="336" y="363" class="t s">动作</text>
+  <text x="336" y="382" class="d xs mono">open · spawn · delete</text>
+  <text x="336" y="398" class="d xs mono">reference · vscode</text>
+  <text x="336" y="420" class="d xs">唤起顺序由 adapter 声明</text>
+  <text x="336" y="436" class="d xs">删除三道护栏</text>
+  <text x="336" y="452" class="d xs">引用按 DSH 自己的语法</text>
+  <text x="336" y="474" class="f xs">宿主只执行「传输方式」</text>
+
+  <rect x="578" y="342" width="244" height="144" rx="7" class="lane"/>
+  <text x="592" y="363" class="t s">环境</text>
+  <text x="592" y="382" class="d xs mono">environment · hosts</text>
+  <text x="592" y="404" class="d xs">四来源合并，先写者胜：</text>
+  <text x="592" y="420" class="d xs mono">config → saved</text>
+  <text x="592" y="436" class="d xs mono">→ published → ssh</text>
+  <text x="592" y="456" class="d xs">切换立即生效，探测在后台</text>
+  <text x="592" y="474" class="f xs">进度可轮询，页面上打日志</text>
+
+  <rect x="834" y="342" width="260" height="144" rx="7" class="lane"/>
+  <text x="848" y="363" class="t s">跨机器</text>
+  <rect x="848" y="374" width="232" height="42" rx="6" fill="#1b2029" stroke="#2a2f3a"/>
+  <text x="860" y="391" class="d xs mono">ssh.js</text>
+  <text x="860" y="407" class="f xs">ConnectTimeout=8 · BatchMode</text>
+  <rect x="848" y="422" width="232" height="42" rx="6" fill="#1b2029" stroke="#2a2f3a"/>
+  <text x="860" y="439" class="d xs mono">host.js</text>
+  <text x="860" y="455" class="f xs">远端命令 = 同一批</text>
+  <text x="848" y="480" class="f xs">两侧共用同一个字节抽象</text>
+
+  <line x1="188" y1="502" x2="188" y2="534" stroke="#5b6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="580" y1="502" x2="580" y2="534" stroke="#5b6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="44" y="538" width="688" height="120" rx="10" fill="#141a16" stroke="#2f4a35"/>
+  <text x="66" y="563" class="t h mono">store.js</text>
+  <text x="142" y="563" fill="#3fb950" font-size="12" font-weight="600">缝隙就在这里</text>
+  <text x="66" y="586" class="d s">所有会话存储的读写都过这一层，所以「换一台机器」不需要动任何一个 adapter。</text>
+  <rect x="66" y="600" width="310" height="44" rx="7" fill="#1b2029" stroke="#2a2f3a"/>
+  <text x="80" y="619" class="d s mono">localStore</text>
+  <text x="80" y="636" class="f xs">本机 fs · 按字节偏移增量读</text>
+  <rect x="392" y="600" width="318" height="44" rx="7" fill="#1b2029" stroke="#2a2f3a"/>
+  <text x="406" y="619" class="d s mono">createRemoteStore(host)</text>
+  <text x="406" y="636" class="f xs">每操作或每批一次 ssh</text>
+
+  <rect x="748" y="538" width="368" height="120" rx="10" class="box"/>
+  <text x="770" y="563" class="t h mono">environments.js</text>
+  <text x="770" y="586" class="d s">机器从哪来 · 在不在 · 它的 $HOME 与 .dsh</text>
+  <text x="770" y="606" class="d xs mono">probeEnvironment → 可达? home? dshHome?</text>
+  <text x="770" y="626" class="d xs">pins · hook spool · 所选环境在 ~/.dsh/session-hub/</text>
+  <text x="770" y="644" class="f xs">这三样可重定位（DSH_SESSION_HUB_HOME），sessions/ 不搬</text>
+
+  <line x1="388" y1="658" x2="388" y2="690" stroke="#5b6478" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="44" y="710" class="f lbl">声明式 adapter 层 · 契约在加载时校验，接口没接好就报错，而不是等到第一次请求</text>
+
+  <rect x="44" y="720" width="170" height="68" rx="8" class="box"/>
+  <circle cx="64" cy="742" r="4" fill="#4d6bfe"/>
+  <text x="78" y="746" class="t s mono">dsh</text>
+  <text x="60" y="765" class="d xs">zstd 帧 · 注册表</text>
+  <text x="60" y="780" class="d xs">审批配对 · 客户端打开</text>
+
+  <rect x="226" y="720" width="170" height="68" rx="8" class="box"/>
+  <circle cx="246" cy="742" r="4" fill="#d97757"/>
+  <text x="260" y="746" class="t s mono">claude</text>
+  <text x="242" y="765" class="d xs">~/.claude/projects</text>
+  <text x="242" y="780" class="d xs">模型与用量同一条消息</text>
+
+  <rect x="408" y="720" width="170" height="68" rx="8" class="box"/>
+  <circle cx="428" cy="742" r="4" fill="#3fb950"/>
+  <text x="442" y="746" class="t s mono">codex</text>
+  <text x="424" y="765" class="d xs">rollout + 名字索引</text>
+  <text x="424" y="780" class="d xs">累计用量取差值</text>
+
+  <rect x="590" y="720" width="170" height="68" rx="8" class="box"/>
+  <circle cx="610" cy="742" r="4" fill="#7b6cff"/>
+  <text x="624" y="746" class="t s mono">gemini</text>
+  <text x="606" y="765" class="d xs">$set 补丁流</text>
+  <text x="606" y="780" class="d xs">每轮 tokens</text>
+
+  <rect x="772" y="720" width="170" height="68" rx="8" class="box"/>
+  <circle cx="792" cy="742" r="4" fill="#d29922"/>
+  <text x="806" y="746" class="t s mono">pi</text>
+  <text x="788" y="765" class="d xs">JSONL，头近 dsh</text>
+  <text x="788" y="780" class="d xs">model_change</text>
+
+  <rect x="954" y="720" width="162" height="68" rx="8" class="box"/>
+  <circle cx="974" cy="742" r="4" fill="#9aa3b2"/>
+  <text x="988" y="746" class="t s mono">opencode</text>
+  <text x="970" y="765" class="d xs">SQLite</text>
+  <text x="970" y="780" class="d xs">自己答全套 op</text>
+
+  <text x="44" y="816" class="f xs">加一个 agent = 新增 sources/&lt;agent&gt;.js 并在 SOURCES 登记一行，index.js 一行都不用改。</text>
+</svg>
