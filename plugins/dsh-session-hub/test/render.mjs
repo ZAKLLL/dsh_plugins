@@ -428,6 +428,7 @@ const expected = [
   "shell.overlay#session-hub-preview",
   "shell.overlay#session-hub-config",
   "shell.overlay#session-hub-hosts",
+  "shell.overlay#session-hub-ways",
   "conversation.composer.dock#session-hub-bridge",
   "sidebar.right.pane.tab#dsh-session-hub",
   "sidebar.right.pane.tab.title#dsh-session-hub",
@@ -435,6 +436,7 @@ const expected = [
 for (const id of expected) assert.ok(registered.has(id), `apply() must register "${id}"`);
 assert.equal(registered.size, expected.length, "apply() must not register anything else");
 console.log(`registered ${registered.size} components`);
+
 
 /* ------------------------------------------------------------------ *
  * Render everything that can render
@@ -852,6 +854,52 @@ const readerModel = hostElements(reader.tree, "sh-read-model");
 assert.equal(readerModel.length, 1, "the reader must name the model");
 assert.ok(textOf(readerModel[0]).length > 0, "and the name must not be empty");
 assert.equal(typeof readerModel[0].props.title, "string", "with a tooltip");
+
+/* ---- the way picker -------------------------------------------------- */
+// Driven the way a person drives it: press the row's open button and see whether
+// the picker appears. A row with exactly one way must NOT ask — that would be a
+// click in the way — so the walk stops at the first row that does ask.
+{
+  const WayDialog = registered.get("shell.overlay#session-hub-ways");
+  let picker = null;
+  let asked = 0;
+
+  for (const row of rows.slice(0, 12)) {
+    // The open button is the one whose tooltip comes from `sessionOpenTitle`:
+    // with the fake `t` that is the raw key, so match on those rather than on a
+    // translation nobody can depend on.
+    const openButton = hostElements(row, "sh-icon-btn").find((node) =>
+      /^(resumeIn|openInDsh|focusIn)/.test(String(node.props.title ?? "")),
+    );
+    if (openButton === undefined || typeof openButton.props.onClick !== "function") continue;
+    asked += 1;
+    openButton.props.onClick();
+    const view = render(WayDialog, {});
+    for (const effect of view.effects) {
+      const cleanup = effect();
+      if (typeof cleanup === "function") cleanups.push(cleanup);
+    }
+    if (hostElements(view.tree, "sh-way").length > 0) {
+      picker = view;
+      break;
+    }
+  }
+
+  assert.ok(picker !== null, "a row with more than one way must open the picker");
+  const buttons = hostElements(picker.tree, "sh-way");
+  assert.ok(buttons.length >= 2, `the picker must list every way, got ${buttons.length}`);
+  for (const button of buttons) {
+    assert.equal(typeof button.props.title, "string", "each way needs a tooltip");
+    assert.ok(textOf(button).length > 0, "and a label a person can read");
+  }
+  assert.equal(hostElements(picker.tree, "sh-backdrop").length, 1, "it must be a dismissible dialog");
+  // The note is the honest part: the record is not ours.
+  assert.ok(
+    hostElements(picker.tree, "sh-ways-note").length > 0,
+    "the picker must say that the conversation stays with the agent",
+  );
+  console.log(`ways: the picker listed ${buttons.length} ways after ${asked} row(s)`);
+}
 
 // ---- every interactive control explains itself ------------------------
 // Walked over everything that actually rendered, not over the source: a source

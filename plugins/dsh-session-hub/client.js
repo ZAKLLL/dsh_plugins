@@ -112,6 +112,12 @@ window.__ModuleLoader__.load({
       focusIn: "Jump to the {terminal} window it is already running in",
       openInVscode: "Open this project in VS Code",
       detailModel: "Model",
+      openWaysTitle: "Open this session",
+      wayChat: "Chat in this window",
+      wayApp: "Open in {label}",
+      wayTerminal: "Resume in a terminal",
+      waysChatNote: "The conversation is recorded by the agent itself — what you see here is its view.",
+      chatOpened: "Chatting with {label} — the record stays with it",
       modeListHint: "Every session found on this machine, grouped",
       modeLiveHint: "What the agents are doing right now",
       filterAllHint: "Do not filter by agent",
@@ -291,6 +297,12 @@ window.__ModuleLoader__.load({
       focusIn: "跳到它正在运行的 {terminal} 窗口",
       openInVscode: "用 VS Code 打开这个项目",
       detailModel: "模型",
+      openWaysTitle: "打开方式",
+      wayChat: "在这个窗口里对话",
+      wayApp: "用 {label} 打开",
+      wayTerminal: "在终端里继续",
+      waysChatNote: "对话由原 agent 自己记录——这里只是它的视图。",
+      chatOpened: "已与 {label} 开始对话——记录仍在它那边",
       modeListHint: "这台机器上找到的全部会话，按组列出",
       modeLiveHint: "各个 agent 此刻在做什么",
       filterAllHint: "不按 agent 筛选",
@@ -540,6 +552,14 @@ window.__ModuleLoader__.load({
 .sh-compacted-count{color:var(--dsw-alias-label-tertiary);flex:none;font-size:10px;font-variant-numeric:tabular-nums}
 .sh-turn-compacted .sh-turn-body{border-left:0;padding-left:0}
 .sh-turn-compacted .sh-turn-text{color:var(--dsw-alias-label-tertiary)}
+.sh-card-ways{width:min(420px,100vw - 32px)}
+.sh-ways{flex-direction:column;gap:6px;display:flex}
+.sh-way{font:inherit;color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;cursor:pointer;align-items:center;gap:8px;padding:9px 11px;font-size:12.5px;display:flex;text-align:left}
+.sh-way:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
+.sh-way:disabled{opacity:.5;cursor:default}
+.sh-way-label{flex:1;min-width:0}
+.sh-way-id{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
+.sh-ways-note{margin-top:2px;line-height:1.5}
 .sh-steps-toggle{border:0;background:0 0;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;align-items:center;gap:5px;padding:2px 0;display:flex;font-size:11px;text-align:left}
 .sh-steps-toggle:hover{color:var(--dsw-alias-label-secondary)}
 .sh-steps-toggle:focus-visible{outline:2px solid var(--color-blue-500);outline-offset:2px;border-radius:var(--dsw-radius-xs)}
@@ -681,6 +701,10 @@ window.__ModuleLoader__.load({
     const reading = createStore(null);
     /** The project a new session is being started in, shared by both entry points. */
     const spawning = createStore(null);
+    /** The row whose ways are being chosen, or null. */
+    const ways = createStore(null);
+    /** Live ACP conversations by the DSH session they render in. */
+    const chats = createStore(new Map());
     /** Bumped after a destructive change so every mounted body reloads. */
     const revision = createStore(0);
     /**
@@ -1711,7 +1735,42 @@ window.__ModuleLoader__.load({
         return (environment.get()?.active?.kind ?? "local") === "remote";
       }
 
-      async function openSession(card, close) {
+      async function openSession(card, close, via = null) {
+        // More than one way to open it means the person should pick, and the ways
+        // come from the adapter's declarations — this is not a hardcoded menu.
+        // One way needs no question; asking would just be a click in the way.
+        if (via === null && Array.isArray(card.ways) && card.ways.length > 1) {
+          ways.set({ card });
+          close?.();
+          return;
+        }
+
+        if (via === "chat") {
+          try {
+            const opened = await hub("chat", { action: "open", key: card.key });
+            if (opened.ok !== true) {
+              say(t("failed", { message: opened.error }), true);
+              return;
+            }
+            // Remember it, so the dock above the composer knows there is a live
+            // conversation for this session and can send turns into it.
+            const next = new Map(chats.get());
+            next.set(opened.sessionId, { key: card.key, agent: card.agent, agentLabel: card.agentLabel });
+            chats.set(next);
+            const uiWorkspace = faces.uiWorkspace();
+            if (uiWorkspace === null) {
+              say(t("failed", { message: "uiWorkspace unavailable" }), true);
+              return;
+            }
+            uiWorkspace.openSession(opened.sessionId);
+            close?.();
+            say(t("chatOpened", { label: card.agentLabel }));
+          } catch (caught) {
+            say(t("failed", { message: String(caught?.message ?? caught) }), true);
+          }
+          return;
+        }
+
         // The DSH shortcut is a *local* one: it hands the session to this
         // machine's workspace registry. A DSH session on another machine belongs
         // to that machine's DSH, so it goes to the Host, which says so.
@@ -1726,7 +1785,7 @@ window.__ModuleLoader__.load({
           return;
         }
         try {
-          const result = await hub("open", { key: card.key });
+          const result = await hub("open", via === null ? { key: card.key } : { key: card.key, via });
           if (result.kind === "terminal-command") {
             await runRemoteCommand(result.command, {
               // The Host opens a window of its own when the tab cannot be driven.
@@ -3513,6 +3572,90 @@ window.__ModuleLoader__.load({
        * client; the command-line agents are launched by the Host in a terminal
        * at the project directory.
        */
+      /**
+       * Which way to open this session.
+       *
+       * The list is the adapter's declarations — nothing here decides what an
+       * agent can do, it only asks. `chat` is offered only where an ACP server is
+       * declared, and it is the one way whose conversation renders in this
+       * window.
+       */
+      function WayDialog() {
+        const state = React.useSyncExternalStore(ways.subscribe, ways.get, ways.get);
+        const [busy, setBusy] = React.useState(false);
+
+        const close = React.useCallback(() => {
+          if (busy) return;
+          ways.set(null);
+        }, [busy]);
+
+        useEscape(state !== null, close);
+        React.useEffect(() => setBusy(false), [state]);
+
+        if (state === null) return null;
+
+        const card = state.card;
+        const label = (way) => {
+          if (way.id === "chat") return t("wayChat");
+          if (way.id === "app") return t("wayApp", { label: way.label ?? "app" });
+          return t("wayTerminal");
+        };
+
+        const pick = async (way) => {
+          setBusy(true);
+          try {
+            await openSession(card, close, way.id);
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        return h(
+          "div",
+          { className: "sh-backdrop", onClick: close },
+          h(
+            "div",
+            {
+              className: "sh-card sh-card-ways",
+              role: "dialog",
+              "aria-modal": "true",
+              "aria-label": t("openWaysTitle"),
+              onClick: (event) => event.stopPropagation(),
+            },
+            h(
+              "div",
+              { className: "sh-head" },
+              h(HubIcon, { size: 18 }),
+              h("span", { className: "sh-title" }, t("openWaysTitle")),
+              h("span", { className: "sh-sub" }, `${card.agentLabel} · ${card.title}`),
+              h("button", { type: "button", className: "sh-btn sh-close", onClick: close, title: t("close"), "aria-label": t("close") }, "✕"),
+            ),
+            h(
+              "div",
+              { className: "sh-ways" },
+              (card.ways ?? []).map((way) =>
+                h(
+                  "button",
+                  {
+                    key: way.id,
+                    type: "button",
+                    className: "sh-way",
+                    disabled: busy,
+                    title: label(way),
+                    "aria-label": label(way),
+                    onClick: () => pick(way),
+                  },
+                  h("span", { className: "sh-way-label" }, label(way)),
+                  h("span", { className: "sh-way-id" }, way.id),
+                ),
+              ),
+            ),
+            card.ways?.some((way) => way.id === "chat") &&
+              h("div", { className: "sh-sub sh-ways-note" }, t("waysChatNote")),
+          ),
+        );
+      }
+
       function SpawnDialog() {
         const state = React.useSyncExternalStore(spawning.subscribe, spawning.get, spawning.get);
         const [busy, setBusy] = React.useState(false);
@@ -3614,7 +3757,7 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog };
+      return { Overlay, SidebarTab, DeleteDialog, WayDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog };
     }
 
     /**
@@ -3993,7 +4136,8 @@ window.__ModuleLoader__.load({
         }, "dsh-session-hub: workspaces face");
       });
 
-      const { Overlay, SidebarTab, DeleteDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog } = makeHub(ctx, t, faces);
+      const { Overlay, SidebarTab, DeleteDialog, WayDialog, SpawnDialog, PreviewDialog, ConfigDialog, HostsDialog } =
+        makeHub(ctx, t, faces);
 
       // Frame-wide entry + overlay.
       ctx.slots.inject("sidebar.footer.action", () =>
@@ -4028,6 +4172,10 @@ window.__ModuleLoader__.load({
       // design: it is how you get out of one.
       ctx.slots.inject("shell.overlay", () =>
         ctx.slots.register({ name: "shell.overlay", id: "session-hub-hosts", order: 25, locale: NS }, HostsDialog),
+
+        // Which way to open a session — a dialog rather than a popover, because a
+        // list row has nowhere to put one that survives scrolling.
+        ctx.slots.register({ name: "shell.overlay", id: "session-hub-ways", order: 26, locale: NS }, WayDialog),
       );
 
       // The dock bridge that hands the overlay the live composer's actions.
