@@ -276,6 +276,15 @@ export function defineAdapter(spec) {
   if (fileBacked === selfServed) problems.push("exactly one of build() or list()");
   if (fileBacked && typeof spec?.match !== "function") problems.push("match() (required by build())");
 
+  // A declaration that cannot be run is worse than none: the panel would offer a
+  // chat that fails at the first click.
+  if (spec?.acp !== undefined && spec?.acp !== null) {
+    if (typeof spec.acp.command !== "string" || spec.acp.command === "") problems.push("acp.command");
+    if (!Array.isArray(spec.acp.args) || spec.acp.args.some((arg) => typeof arg !== "string")) {
+      problems.push("acp.args (must be an array of strings)");
+    }
+  }
+
   if (problems.length > 0) {
     throw new Error(`session-hub adapter "${spec?.id ?? "?"}" is missing: ${problems.join(", ")}`);
   }

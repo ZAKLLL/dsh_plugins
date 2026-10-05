@@ -121,6 +121,22 @@ const adapters = {};
 for (const id of ["dsh", "claude", "codex", "gemini", "pi", "opencode"]) {
   adapters[id] = (await import(`../sources/${id}.js`)).default;
 }
+
+// A dialect may declare how to start its ACP server. The declaration is what the
+// panel reads to decide whether a row can be chatted with here, so an unrunnable
+// one would offer a chat that fails on the first click.
+let acpDeclared = 0;
+for (const id of Object.keys(adapters)) {
+  const declared = adapters[id]?.acp;
+  if (declared === undefined) continue;
+  acpDeclared += 1;
+  assert.equal(typeof declared.command, "string", `${id}: acp.command must be a string`);
+  assert.ok(declared.command !== "", `${id}: acp.command must not be empty`);
+  assert.ok(Array.isArray(declared.args), `${id}: acp.args must be an array`);
+  for (const arg of declared.args) assert.equal(typeof arg, "string", `${id}: every acp arg must be a string`);
+}
+assert.ok(acpDeclared > 0, "at least one agent must declare an ACP server, or the feature has no way in");
+
 for (const card of list.body.sessions) {
   const plan = adapters[card.agent]?.openPlan?.(card);
   if (plan === undefined) continue;

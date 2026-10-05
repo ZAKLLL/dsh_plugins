@@ -273,6 +273,15 @@ async function removeCodexIndexEntry(sessionId, store) {
 export default defineAdapter({
   id: "codex",
   /**
+   * How to start this agent's ACP server.
+   *
+   * From the published registry, which is the authority on the recipe and the
+   * version: `npx <package>` is how most adapters ship. Declared here so
+   * "can this row be chatted with in the panel" is answered by a declaration
+   * rather than a list in the Host that drifts.
+   */
+  acp: { command: "npx", args: ["-y", "@agentclientprotocol/codex-acp@2.1.1"] },
+  /**
    * The Codex desktop app registers `codex://` and builds thread links from a
    * `codex://threads/` prefix.
    *

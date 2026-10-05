@@ -109,6 +109,15 @@ function hasPiSignal(events) {
 
 export default defineAdapter({
   id: "pi",
+  /**
+   * How to start this agent's ACP server.
+   *
+   * From the published registry, which is the authority on the recipe and the
+   * version: `npx <package>` is how most adapters ship. Declared here so
+   * "can this row be chatted with in the panel" is answered by a declaration
+   * rather than a list in the Host that drifts.
+   */
+  acp: { command: "npx", args: ["-y", "pi-acp@0.0.34"] },
   sessionFile: (card) => ({ path: card.file, kind: "file", label: handoffName(card) }),
   label: LABEL,
   executables: ["pi"],
