@@ -23,6 +23,8 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { environmentOps } from "./ops/environment.js";
+import { opRegistry } from "./ops/op.js";
 import dshSource from "./sources/dsh.js";
 import claudeSource from "./sources/claude.js";
 import codexSource from "./sources/codex.js";
@@ -2257,12 +2259,63 @@ function hubState() {
  * @param ctx - The Host plugin context of the generation that is live.
  */
 /** Every operation this Host answers; also reported when an unknown one arrives. */
-const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "models", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many", "environment", "hosts", "config"];
+/**
+ * Ops that have moved into their own module, by name.
+ *
+ * A migration seam, not a second dispatch: everything still reaches `dispatch`,
+ * and each handler is checked against the same contract the adapters use. The
+ * rest of the chain below is what has not moved yet.
+ */
+const REGISTRY = opRegistry([...environmentOps]);
+
+/**
+ * What an op module is allowed to reach for.
+ *
+ * The ops were part of this file once, so they used its internals as free
+ * variables. Handing them over explicitly is what makes the boundary real: the
+ * list below is the surface, and `test/imports.mjs` fails the moment a module
+ * calls something that is not on it.
+ */
+const HOST_SERVICES = {
+  LOCAL_ENVIRONMENT,
+  MAX_CONFIG_BYTES,
+  SOURCES,
+  environmentState,
+  activateEnvironment,
+  declaredConfigFiles,
+  describeEnvironment,
+  environmentCatalogue,
+  environmentStatePath,
+  fencedConfigPath,
+  findEnvironment,
+  hostCandidates,
+  isHostAlias,
+  mapLimit,
+  probeEnvironment,
+  readEnvironmentState,
+  refreshEnvironmentList,
+  store,
+  writeActiveId,
+  writeEnvironmentState,
+};
+
+const OPS = ["list", "status", "preview", "pin", "transcript", "messages", "models", "vscode", "continue", "reference", "open", "spawn", "delete", "delete-many"];
 
 async function dispatch(payload, ctx) {
   const op = typeof payload?.op === "string" ? payload.op : "list";
 
   await ensureEnvironment(ctx);
+
+  const registered = REGISTRY.get(op);
+  if (registered !== undefined) {
+    // The storage guard is applied here rather than inside each module, so a
+    // handler cannot forget it — the same reason the flag is part of the contract.
+    if (registered.store) {
+      const refused = environmentGuard();
+      if (refused !== null) return refused;
+    }
+    return registered.handle(payload, ctx, HOST_SERVICES);
+  }
 
   /**
    * Which machine the panel is looking at, and the switch itself.
@@ -2271,45 +2324,6 @@ async function dispatch(payload, ctx) {
    * answer "where is your store" from the active environment, so it has to be
    * one answer for the whole Host, not a per-request override.
    */
-  if (op === "environment") {
-    const action = typeof payload?.action === "string" ? payload.action : "list";
-    // Recomputed per request, so a machine another plugin started publishing is
-    // reachable without a reload — and so is one added from the manager.
-    await refreshEnvironmentList(ctx);
-    if (action === "list") {
-      return {
-        ok: true,
-        active: describeEnvironment(),
-        environments: environmentCatalogue(),
-        problems: environmentState.problems,
-      };
-    }
-    // The switch can take a dozen seconds; this is what the panel polls while it
-    // waits, so the wait can say what it is waiting for.
-    if (action === "status") {
-      return {
-        ok: true,
-        progress: environmentState.progress,
-        active: describeEnvironment(),
-        environments: environmentCatalogue(),
-      };
-    }
-
-    if (action === "set" || action === "probe") {
-      const id = action === "set" && typeof payload?.id === "string" ? payload.id : environmentState.activeId;
-      if (findEnvironment(environmentState.list, id) === null) {
-        return { ok: false, error: `unknown environment: ${id}`, environments: environmentCatalogue() };
-      }
-      // `set` lands at once and lets the probe catch up; `probe` is the action
-      // whose whole point is the answer, so it waits.
-      await activateEnvironment(id, { force: true, wait: action === "probe" });
-      // Only a deliberate switch is remembered; a failed reconnect must not
-      // overwrite the last good choice with the machine that is still down.
-      if (action === "set") await writeActiveId(id);
-      return { ok: true, progress: environmentState.progress, active: describeEnvironment(), environments: environmentCatalogue() };
-    }
-    return { ok: false, error: `unknown environment action: ${action}` };
-  }
 
   if (STORE_OPS.has(op)) {
     const refused = environmentGuard();
@@ -2326,92 +2340,6 @@ async function dispatch(payload, ctx) {
    * instead of `~/.claude/settings.json` here, because the adapter derives the
    * path from `home()` like everything else.
    */
-  if (op === "config") {
-    const action = typeof payload?.action === "string" ? payload.action : "list";
-    const agent = typeof payload?.agent === "string" ? payload.agent : "";
-
-    if (action === "list") {
-      const groups = [];
-      for (const source of SOURCES) {
-        const files = declaredConfigFiles(source.id);
-        if (files === null || files.length === 0) continue;
-        const rows = await mapLimit(files, 4, async (file) => {
-          let stats = null;
-          try {
-            stats = await store().stat(file.path);
-          } catch {
-            /* Absent is the normal state of a config that was never written. */
-          }
-          return {
-            path: file.path,
-            label: file.label,
-            language: file.language ?? "text",
-            sensitive: file.sensitive === true,
-            creatable: file.creatable === true,
-            exists: stats !== null,
-            bytes: stats?.size ?? null,
-            mtimeMs: stats?.mtimeMs ?? null,
-          };
-        });
-        groups.push({ agent: source.id, agentLabel: source.label, files: rows });
-      }
-      return { ok: true, environment: describeEnvironment(), agents: groups };
-    }
-
-    if (action === "read" || action === "write") {
-      const path = typeof payload?.path === "string" ? payload.path : "";
-      const fence = fencedConfigPath(agent, path);
-      if (fence.ok !== true) return fence;
-
-      if (action === "read") {
-        try {
-          const stats = await store().stat(path);
-          if (stats.size > MAX_CONFIG_BYTES) {
-            return { ok: false, error: `${path} is ${stats.size} bytes — too large to edit here` };
-          }
-          const buffer = await store().readFile(path);
-          return {
-            ok: true,
-            path,
-            agent,
-            label: fence.file.label,
-            language: fence.file.language ?? "text",
-            sensitive: fence.file.sensitive === true,
-            text: buffer.toString("utf8"),
-            bytes: buffer.length,
-            mtimeMs: stats.mtimeMs,
-          };
-        } catch (error) {
-          return { ok: false, error: `cannot read ${path}: ${String(error?.message ?? error)}` };
-        }
-      }
-
-      if (typeof payload?.text !== "string") return { ok: false, error: "a config write needs a text body" };
-      if (Buffer.byteLength(payload.text, "utf8") > MAX_CONFIG_BYTES) {
-        return { ok: false, error: "the new body is too large to write" };
-      }
-      try {
-        // Keep the previous body. This is someone's real configuration, a
-        // mis-click is destructive, and the editor has no undo once the request
-        // has left the browser.
-        let backup = null;
-        try {
-          const previous = await store().readFile(path);
-          backup = `${path}.dsh-session-hub.bak`;
-          await store().writeText(backup, previous.toString("utf8"));
-        } catch {
-          backup = null;
-        }
-        await store().writeText(path, payload.text);
-        const stats = await store().stat(path);
-        return { ok: true, path, agent, bytes: stats.size, backup, environment: describeEnvironment() };
-      } catch (error) {
-        return { ok: false, error: `cannot write ${path}: ${String(error?.message ?? error)}` };
-      }
-    }
-
-    return { ok: false, error: `unknown config action: ${action}` };
-  }
 
   /**
    * The machines the panel can switch to, and the way to change that list.
@@ -2422,82 +2350,6 @@ async function dispatch(payload, ctx) {
    * only `~/.ssh/config`, this plugin's state file, and the `remoteHosts`
    * service.
    */
-  if (op === "hosts") {
-    const action = typeof payload?.action === "string" ? payload.action : "list";
-    const sshConfigPath = join(localHome(), ".ssh", "config");
-    const statePath = environmentStatePath();
-
-    if (action === "list") {
-      return { ok: true, sshConfigPath, statePath, hosts: await hostCandidates(ctx), active: describeEnvironment() };
-    }
-
-    if (action === "probe") {
-      const alias = typeof payload?.alias === "string" ? payload.alias.trim() : "";
-      // Any candidate may be tested, including one that is not an environment
-      // yet — "does this machine work" is the question you ask *before* adding it.
-      const candidate = (await hostCandidates(ctx)).find((row) => row.alias === alias);
-      if (candidate === undefined) return { ok: false, error: `unknown host: ${alias}` };
-      const probe = await probeEnvironment(
-        {
-          id: alias,
-          kind: "remote",
-          alias,
-          label: candidate.label,
-          ...(candidate.home === null ? {} : { home: candidate.home }),
-          ...(candidate.dshHome === null ? {} : { dshHome: candidate.dshHome }),
-        },
-        { force: true },
-      );
-      return { ok: true, alias, probe };
-    }
-
-    if (action === "save" || action === "remove") {
-      const alias = typeof payload?.alias === "string" ? payload.alias.trim() : "";
-      if (!isHostAlias(alias)) return { ok: false, error: `${JSON.stringify(alias)} is not a usable ssh host name` };
-
-      const state = await readEnvironmentState();
-      const kept = state.hosts.filter((host) => host.alias !== alias);
-
-      if (action === "save") {
-        const label = typeof payload?.label === "string" ? payload.label.trim() : "";
-        const entry = { alias, label: label === "" ? alias : label, enabled: payload?.enabled !== false };
-        for (const key of ["home", "dshHome"]) {
-          const value = payload?.[key];
-          if (value === undefined || value === null || value === "") continue;
-          if (typeof value !== "string" || !value.startsWith("/")) {
-            return { ok: false, error: `${key} must be an absolute path` };
-          }
-          entry[key] = value.trim();
-        }
-        kept.push(entry);
-      }
-
-      if (!(await writeEnvironmentState({ ...state, hosts: kept }))) {
-        return { ok: false, error: `could not write ${statePath}` };
-      }
-      await refreshEnvironmentList(ctx);
-
-      // Hiding or forgetting the machine you are looking at has to move you off
-      // it. Staying would leave the panel pointed at something no longer in the
-      // catalogue — the "showing a machine I did not choose" state the switcher
-      // exists to prevent.
-      if (findEnvironment(environmentState.list, environmentState.activeId) === null) {
-        await activateEnvironment(LOCAL_ENVIRONMENT.id, { force: true });
-        await writeActiveId(LOCAL_ENVIRONMENT.id);
-      }
-
-      return {
-        ok: true,
-        sshConfigPath,
-        statePath,
-        hosts: await hostCandidates(ctx),
-        active: describeEnvironment(),
-        environments: environmentCatalogue(),
-      };
-    }
-
-    return { ok: false, error: `unknown hosts action: ${action}` };
-  }
 
   if (op === "list") {
     const { cards, sources, runningCount, cmux, pins } = await inventory(payload?.refresh === true, ctx);
@@ -2884,7 +2736,9 @@ async function dispatch(payload, ctx) {
 
   // A stale Host is the failure this reports most often, so the message names
   // what this generation actually answers instead of just rejecting the op.
-  return { ok: false, error: `unknown op: ${op}`, supported: OPS };
+  // Both halves: an op that has moved must still be listed, or a stale client
+  // would be told a name it already uses is unknown.
+  return { ok: false, error: `unknown op: ${op}`, supported: [...REGISTRY.keys(), ...OPS] };
 }
 
 /**

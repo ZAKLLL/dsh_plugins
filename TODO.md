@@ -112,6 +112,29 @@ spool 时走它；而 `hook.mjs` 当时**只认 `DSH_HOME`**——于是把插�
 - [ ] 顺带确认：环境状态是否在**激活时**被读一次并缓存——若是，测试必须在 import 之前
       设好 `DSH_SESSION_HUB_HOME`（`preview.mjs` 目前是 import 之后才设）
 
+## 4c. op 分发的去分支化（**进行中：3/17**）
+
+`sources/` 那套（契约 + 每块一个文件 + 加载时校验）正在用到 op 上。已完成：契约
+`ops/op.js`、注册表接线、以及**环境组**（`environment` / `hosts` / `config`）搬进
+`ops/environment.js`。`index.js` 2994 → 2793 行。
+
+**剩下 14 个**，按内聚性建议这样分组搬：
+
+- [ ] `ops/inventory.js`：`list` `status`
+- [ ] `ops/live.js`：`preview`
+- [ ] `ops/reader.js`：`transcript` `messages` `models`
+- [ ] `ops/actions.js`：`open` `spawn` `continue` `reference` `vscode` `pin`
+- [ ] `ops/store.js`：`delete` `delete-many`
+- [ ] 搬完后把 `OPS` 常量与下半段 `if` 链删掉，注册表成为唯一来源
+
+**每搬一组都要：** `test/imports.mjs` 必须先绿（它会报「调了不在服务面上的东西」），
+再跑九套。
+
+> 教训（这次踩的）：依赖是靠**运行时错误逐个暴露**的（`join` → `environmentState`
+> → `SOURCES`），一轮一个、很慢。更快的是**求「op 模块用到的标识符」与「宿主模块
+> 作用域声明」的交集**——一次就能算全。也顺手补了 `imports.mjs` 的两个盲区：不扫
+> `ops/`、不认 `[...spread]` 与对象字面量简写。
+
 ## 5. `dsh-session-hub` 的 remote 模式（**代码与自动化验收已完成**，桌面端待重启生效）
 
 **背景**：把远端机器的会话来进 Session Hub，**不是**再加一个平行插件，而是在 adapter 层下面换一层「字节从哪来」——所以六个 adapter 一行都没改。

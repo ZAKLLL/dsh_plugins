@@ -414,27 +414,6 @@ export function createRemoteStore({ alias, id = alias, timeoutMs = 30000 }) {
       return found;
     },
 
-    /**
-     * Is this machine actually there?
-     *
-     * A remote store that answered "no sessions" for an unreachable host would
-     * be indistinguishable from a host with no sessions, so the Host asks this
-     * first and reports the failure instead of an empty list.
-     */
-    async check() {
-      try {
-        const { code, stdout, stderr } = await sshExec(
-          alias,
-          `printf 'ok %s\\n' "$HOME"`,
-          { timeoutMs: Math.min(timeoutMs, 12000) },
-        );
-        if (code !== 0) return { ok: false, error: stderr.trim() || `ssh exited ${code}` };
-        const home = stdout.toString("utf8").trim().replace(/^ok\s*/, "");
-        return { ok: home !== "", error: null, home };
-      } catch (error) {
-        return { ok: false, error: String(error?.message ?? error) };
-      }
-    },
   };
 }
 
@@ -454,4 +433,3 @@ export function parseRemoteStat(text) {
 }
 
 /** A store id → implementation, so an environment names its own byte source. */
-export const STORES = new Map([["local", localStore]]);

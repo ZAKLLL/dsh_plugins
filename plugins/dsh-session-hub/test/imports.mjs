@@ -157,10 +157,16 @@ function codeOnly(source) {
 /** Every module the Host half is made of. */
 async function hostModules() {
   const files = ["index.js", "shared.js", "store.js", "host.js", "ssh.js", "environments.js", "hook.mjs"];
-  const sources = await readdir(join(root, "sources"));
-  for (const name of sources) {
-    if (name.endsWith(".js")) files.push(join("sources", name));
+  // Every directory of modules the Host loads: a new one that is not listed here
+  // would silently stop being checked, which is exactly what happened when ops/
+  // was introduced.
+  for (const dir of ["sources", "ops"]) {
+    const names = await readdir(join(root, dir));
+    for (const name of names) {
+      if (name.endsWith(".js")) files.push(join(dir, name));
+    }
   }
+  const sources = [];
   return files;
 }
 
@@ -261,7 +267,10 @@ for (const relative of await hostModules()) {
   // Import statements are removed from the *code-only* text, where the lexer has
   // already blanked the quoted module path — matching on quotes here silently
   // matched nothing, which made this half of the check pass on everything.
-  const body = code.replace(/^[ \t]*import\s[\s\S]*?;[ \t]*$/gm, "");
+  // Spreads are usages too, but `...name` puts a dot right before the name and
+  // the lookbehind below reads that as property access — so `environmentOps`
+  // used only as `[...environmentOps]` looked unused. Blank the dots first.
+  const body = code.replace(/^[ \t]*import\s[\s\S]*?;[ \t]*$/gm, "").replace(/\.\.\./g, "   ");
   for (const name of imported) {
     const used = new RegExp(`(?<![.\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(body);
     check(used, `${relative}: imports ${name} and never uses it (an adapter that looks like it touches things it does not)`);

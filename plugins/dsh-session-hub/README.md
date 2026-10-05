@@ -18,6 +18,32 @@
 
 > 矢量图在 [`docs/architecture.svg`](docs/architecture.svg)，可缩放、可直接改。图里刻意画出来的三件事：**唯一一条路由**、**store 缝隙**（换机器不需要动 adapter）、**契约在加载时校验**。
 
+## 架构：op 也是一个契约
+
+宿主的第一步去分支化把**方言**搬进了 `sources/`；同一件事正在**操作**上做第二遍：
+
+```
+ops/
+├── op.js            # 契约本身：defineOp() 加载时校验 + opRegistry() 拒绝重名
+└── environment.js   # environment · hosts · config   ← 已经搬出来的一组
+```
+
+```js
+export const environmentOps = [
+  defineOp({ name: "hosts", store: false, async handle(payload, ctx, host) { … } }),
+];
+```
+
+**`store` 不是记账，它是一条规则**：「这个 op 会读 agent 存储，因此在环境不可达时必须被拒」。它写在契约里、由宿主在执行前统一施加，而不是指望每个处理函数自己记得。
+
+**op 拿到的是「宿主服务面」**——第三个参数 `host` 里显式列出它被允许触碰的东西（`describeEnvironment`、`activateEnvironment`、`SOURCES`…）。原先它们和宿主同处一个文件，用的是自由变量；显式交接才让这条边界成为真的：**`test/imports.mjs` 会在模块调用了不在面上的东西时失败**。
+
+> 这次拆分踩到的两个坑都值得记：**依赖是靠运行时错误逐个暴露的**（`join` → `environmentState` → `SOURCES`），而 `imports.mjs` 当时只扫 `sources/`、且只统计「被调用」——**不扫新目录、也不认对象字面量的简写属性**。两处都补了。最后还是靠「它与宿主模块作用域的交集」一次算全的，比逐个试快得多。
+
+**迁移是有缝的，不是半成品**：还没搬的 op 仍走同一条 `dispatch` 的下半段，注册表只是先查一次。未知 op 的 `supported` 同时列出来源两处，所以老客户端不会被告知自己正在用的名字不存在。
+
+**已搬出 3 个，还剩 14 个**（`list` / `status` / `preview` / `models` / `messages` / `transcript` / `continue` / `open` / `reference` / `vscode` / `pin` / `spawn` / `delete` / `delete-many`）。
+
 ## 架构：一个声明式 adapter 层
 
 宿主半边**不按 agent 分支**。`index.js` 里没有任何 `card.agent === "..."`，也没有 `AGENT_LABELS` / `AGENT_EXECUTABLES` / `SPAWN_COMMANDS` 这类平行表——**所有针对某一个 agent 的知识都在 `sources/<agent>.js` 里**，由一个声明式接口约束。
@@ -910,6 +936,7 @@ DSH 的会话头里有 `parentSession`、`origin: "subagent"`、`delegationDepth
 dsh-session-hub/
 ├── package.json        # dsh.bundle.patch + dsh.client.platform
 ├── cordis.patch.yml    # 插入 session-hub 这一行；机器清单就在这里的 config.environments（见上）
+├── ops/                # 操作契约与已搬出的 op（见上）
 ├── index.js            # 宿主半边：四个扫描器 + 统一模型 + 实时状态 + 预览 + transcript + 删除 + 置顶 + 配置 + 环境切换 + /api 路由
 ├── store.js            # 会话存储的字节从哪来：localStore（本机 fs）/ createRemoteStore（每操作或每批一次 ssh）
 ├── host.js             # 一台机器能做什么：exec / invocation / processes / cwdOf（本机与远端两个实现）
