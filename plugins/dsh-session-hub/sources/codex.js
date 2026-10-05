@@ -280,7 +280,7 @@ export default defineAdapter({
    * "can this row be chatted with in the panel" is answered by a declaration
    * rather than a list in the Host that drifts.
    */
-  acp: { command: "npx", args: ["-y", "@agentclientprotocol/codex-acp@2.1.1"] },
+  acp: { command: "npx", args: ["-y", "--package=@agentclientprotocol/codex-acp@2.1.1", "codex-acp"] },
   /**
    * The Codex desktop app registers `codex://` and builds thread links from a
    * `codex://threads/` prefix.

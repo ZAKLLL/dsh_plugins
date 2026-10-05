@@ -81,6 +81,25 @@ DSH 的聊天框                                            ← GUI
 
 > **`loadSession` 在全表 35 行里都有**，所以「在你这边继续一条已有会话」是一等公民而不是边角能力。真正的第一道坎是**认证**：35 个里 23 个在 `session/new` 时返回 `auth_required`，方式分 `terminal` / `agent` / `env_var` 三种。
 
+### 实测：入口是成立的（2026-10-05）
+
+用真 agent 跑过一遍（`tools/acp-probe.mjs`，不是测试——它联网并起真进程）。**事实如下，别再重新调研**：
+
+| 结论 | 证据 |
+| --- | --- |
+| **原生会话 id 就是 ACP 的会话 id** | `session/list` 返回的 `sessionId` 与本插件从原生存储读到的**逐字节相同**，还带 `cwd` / `title` / `updatedAt` |
+| **`session/load(<原生 id>)` 成功** | codex-acp 返回了 models 列表而不是错误 |
+| **`codex-acp` 不需要显式认证** | 它声明了 `api-key` / `chat-gpt`，但 `session/new`、`session/load`、`prompt` **直接可用**——复用了机器上已有的 codex 登录 |
+| **`pi-acp` 需要认证**，且**不报错而是不回应** | 它声明 `pi_terminal_login`（type `terminal`），然后 `session/new` / `session/load` **永远不回复** |
+| **scoped 包必须写成 `--package=<pkg> <bin>`** | 裸形式（`npx -y @scope/pkg`）以 `sh: codex-acp: command not found` 结束 |
+| **流式是真的** | 一次 prompt 收到 8 条 `agent_message_chunk`（`"PRO"` `"BE"` `"-"` `"OK"` 这样切开的） |
+
+**第 4 条直接改变了内核**：请求如果不设期限，遇到「不回应」的 agent 就**永远挂着**——而那正是人看到的「卡住」。所以 `acp.js` 每个请求都有 deadline，并且测试里有一条「永不回答的请求必须 reject」。
+
+**第 6 条证明了 `view.js` 里那个决定**：8 个 chunk 必须合成**一条**消息，否则对话里会是 8 个碎片。
+
+`session/list` 本身也是个发现：**支持它的 agent 能自己列出会话**（带标题与 cwd），这和扫存储是两条路——历史会话只有存储里有，而 agent 自己列出的更权威。目前的选择是**扫存储当索引，ACP 负责驱动**。
+
 ### 说 v1，不说 v2
 
 官方 `schema/v1/meta.json` 与 `schema/v2/meta.json` 是**方法名映射表**，而两个版本有实质差异：

@@ -218,7 +218,7 @@ export default defineAdapter({
    * "can this row be chatted with in the panel" is answered by a declaration
    * rather than a list in the Host that drifts.
    */
-  acp: { command: "npx", args: ["-y", "@google/gemini-cli@0.62.0", "--acp"] },
+  acp: { command: "npx", args: ["-y", "--package=@google/gemini-cli@0.62.0", "gemini", "--acp"] },
   sessionFile: (card) => ({ path: card.file, kind: "file", label: handoffName(card) }),
   label: LABEL,
   executables: ["gemini"],

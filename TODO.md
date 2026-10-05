@@ -139,7 +139,11 @@ schema.json**、流式 `session/update`、`session/request_permission` 走注入
 **下一步（按依赖顺序）**：
 
 - [x] ~~先定「谁拥有会话」~~ —— **已消解**：DSH 是视图，不落盘
-- [ ] **用一个真 agent 验一次 `session/load` 是否回放历史**——这是唯一的未知，也是「打开一条已有会话」的前提
+- [x] **已用真 agent 验完**（`tools/acp-probe.mjs`）：**原生 id 就是 ACP 的 id**、
+      `session/load(<原生 id>)` **成功**、codex-acp 免认证（复用已有登录）、pi-acp 需认证
+      且**不回应**（所以内核加了 deadline）。详见 README「实测：入口是成立的」。
+      **仍未验**：`session/load` 之后 agent 是否把**历史**回放成 `session/update`——
+      上面只验到「load 成功返回」，没验回放内容。
 - [ ] 宿主侧接上：`sessions.create()` + `acp.loadSession()` + `view.js` 的 append（`onUpdate` 已有回调）
 - [ ] 入口：会话行点「在聊天框继续」→ 建视图 + load + 开始 append
 - [ ] 用 `subprocess` 起进程（**先核实 `SubprocessHandle` 的形状再替换 `node:child_process`**，

@@ -180,6 +180,29 @@
  * @property {(card: SessionCard) => SessionArtifact} sessionFile The store
  *   artifact this session lives in — exact, and what the delete fence and the
  *   transcript header cite.
+ * @property {(card: SessionCard) => OpenStep[]} [openPlan] How to wake this
+ *   session in its own agent, best option first. The Host owns the *transports*
+ *   (handing a URL to the OS, focusing a running terminal, starting a session
+ *   here) and the adapter owns the *order*, because only it knows what its own
+ *   agent understands. A step that cannot be honoured falls through to the next,
+ *   and the default is a single `{kind:"terminal"}` step — so a plan must end in
+ *   one, or the session is unopenable wherever the app is absent.
+ * @property {{command: string, args: readonly string[]}} [acp] How to start this
+ *   agent's ACP server, when it has one: a command and its arguments, run in the
+ *   session's own directory. Declared rather than inferred, so "can this row be
+ *   chatted with in the panel" is answered by a declaration instead of a list in
+ *   the Host that drifts.
+ *
+ *   **A scoped package must be spelled `--package=<pkg> <bin>`.** Measured: the
+ *   bare form (`npx -y @scope/pkg`) ended in `sh: <bin>: command not found`, while
+ *   the explicit form starts the server. Unscoped packages work either way, and
+ *   every recipe uses the explicit form so there is one rule.
+ *
+ *   The recipes come from the published registry
+ *   (`cdn.agentclientprotocol.com/registry/v1/latest/registry.json`) — the
+ *   authority on both the package and the version. Omitted when the agent has no
+ *   ACP server, or ships one as a binary that has to be downloaded first: the
+ *   omission means "no server that can be started directly", not "unknown".
  * @property {(card: SessionCard, options: {dir: string}) => Promise<Handoff>} [handoff]
  *   Hand this session over as an attachable file. Omit it when the store is
  *   already one readable file, and the Host returns that file directly; provide

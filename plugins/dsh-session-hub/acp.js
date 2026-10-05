@@ -85,7 +85,19 @@ function defaultSpawn({ command, args, cwd, env }) {
  *   and a client that guesses has removed the only thing standing there.
  */
 export function connectAcp(options) {
-  const { command, args = [], cwd, env, spawnChild = defaultSpawn, askPermission } = options;
+  const {
+    command,
+    args = [],
+    cwd,
+    env,
+    spawnChild = defaultSpawn,
+    askPermission,
+    // A request that never answers must not hang its caller forever. Measured
+    // against a real server: `session/load` on an unauthenticated agent simply
+    // never replied — no result, no error. Waiting on that is what a person sees
+    // as a frozen panel.
+    timeoutMs = 30000,
+  } = options;
 
   const child = spawnChild({ command, args, cwd, env });
   const pending = new Map();
@@ -113,7 +125,24 @@ export function connectAcp(options) {
         return;
       }
       const id = nextId++;
-      pending.set(id, { resolve, reject, method });
+      const timer = setTimeout(() => {
+        // Drop it rather than leave it pending: a late result must not resolve a
+        // request the caller has already given up on.
+        pending.delete(id);
+        reject(new Error(`${method} did not answer within ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      pending.set(id, {
+        method,
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       write({ jsonrpc: "2.0", id, method, params });
     });
 

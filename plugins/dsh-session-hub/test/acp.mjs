@@ -125,6 +125,26 @@ const start = (options = {}) =>
   await new Promise((resolve) => setTimeout(resolve, 120));
 }
 
+/* ---- a request that never answers must not hang its caller ---------- */
+{
+  // Measured against a real server: `session/load` on an agent that wants
+  // authentication returned neither a result nor an error. Without a deadline
+  // the caller waits forever, and a person sees a frozen panel.
+  const acp = start({ timeoutMs: 600 });
+  await acp.initialize();
+  let rejected = null;
+  try {
+    await acp.prompt("new-1", "no-answer");
+  } catch (error) {
+    rejected = error;
+  }
+  check(rejected !== null, "a request that never answers must reject");
+  check(/did not answer within/.test(String(rejected?.message)), `and say why: ${rejected?.message}`);
+  console.log("  deadline: an unanswered request rejects instead of hanging");
+  acp.stop();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+}
+
 /* ---- a dead agent must not hang its caller -------------------------- */
 {
   const acp = start();

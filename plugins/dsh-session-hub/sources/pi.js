@@ -117,7 +117,7 @@ export default defineAdapter({
    * "can this row be chatted with in the panel" is answered by a declaration
    * rather than a list in the Host that drifts.
    */
-  acp: { command: "npx", args: ["-y", "pi-acp@0.0.34"] },
+  acp: { command: "npx", args: ["-y", "--package=pi-acp@0.0.34", "pi-acp"] },
   sessionFile: (card) => ({ path: card.file, kind: "file", label: handoffName(card) }),
   label: LABEL,
   executables: ["pi"],

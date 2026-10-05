@@ -92,6 +92,12 @@ lines.on("line", async (line) => {
       return;
     }
 
+    if (asked === "no-answer") {
+      // A real server did exactly this: `session/load` on an unauthenticated
+      // agent never replied. Swallowing the request reproduces it.
+      return;
+    }
+
     if (asked === "unknown-request") {
       // A capability this client does not implement. It must still be answered.
       const answer = await request("fs/read_text_file", { sessionId, path: "/etc/hosts" });
