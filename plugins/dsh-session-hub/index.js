@@ -23,6 +23,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { chatOps } from "./ops/chat.js";
 import { environmentOps } from "./ops/environment.js";
 import { opRegistry } from "./ops/op.js";
 import dshSource from "./sources/dsh.js";
@@ -32,12 +33,13 @@ import geminiSource from "./sources/gemini.js";
 import piSource from "./sources/pi.js";
 import opencodeSource from "./sources/opencode.js";
 import {
-  dshHome,
   decodeZstdFrames,
+  dshHome,
+  home,
   localHome,
-  sessionHubHome,
   oneLine,
   parseJsonl,
+  sessionHubHome,
   setEnvironmentScope,
   toMs,
 } from "./shared.js";
@@ -2266,7 +2268,7 @@ function hubState() {
  * and each handler is checked against the same contract the adapters use. The
  * rest of the chain below is what has not moved yet.
  */
-const REGISTRY = opRegistry([...environmentOps]);
+const REGISTRY = opRegistry([...environmentOps, ...chatOps]);
 
 /**
  * What an op module is allowed to reach for.
@@ -2276,8 +2278,14 @@ const REGISTRY = opRegistry([...environmentOps]);
  * list below is the surface, and `test/imports.mjs` fails the moment a module
  * calls something that is not on it.
  */
+/** The card for a key from the last scan, or null. */
+const findCardByKey = (key) => lastCards.find((card) => card.key === key) ?? null;
+
 const HOST_SERVICES = {
   LOCAL_ENVIRONMENT,
+  adapterOf,
+  findCard: findCardByKey,
+  home,
   MAX_CONFIG_BYTES,
   SOURCES,
   environmentState,
