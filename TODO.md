@@ -128,10 +128,20 @@ schema.json**、流式 `session/update`、`session/request_permission` 走注入
 - **说 v1**：v2 把 `session/load` 换成了 `session/resume`、`authenticate` 换成 `auth/login`，
   而今天的适配器讲 v1
 
+**定盘星（用户定的，别再动摇）**：DSH 的聊天框只是一条**视图**，记录在原始 agent 那里。
+所以**不落本地盘**、「两份记录」不成立、「谁拥有会话」这个问题消失。`ctx.sessions`
+是内存存储这件事从缺陷变成设计。
+
+**已完成**：`view.js` —— 把 ACP `session/update` 折成 DSH 会话事件（chunk 合并成一条消息、
+`surfaceOp:"append"`、`MessageBase` 三件套），**纯函数 + 鸭子类型 append**，39 条断言
+不需要 DSH 在跑。字段形状取自 `.ref/` 的 DSH 生成类型。
+
 **下一步（按依赖顺序）**：
 
-- [ ] **先定「谁拥有会话」**——DSH 拥有、原生 store 当镜像？还是两份并存？**这个决定约束后面每一步**
-- [ ] 宿主侧接上：`session` 缝隙（`start` / `load` / `prompt` / `follow` / `interrupt`），复用 `store.js` 的位置
+- [x] ~~先定「谁拥有会话」~~ —— **已消解**：DSH 是视图，不落盘
+- [ ] **用一个真 agent 验一次 `session/load` 是否回放历史**——这是唯一的未知，也是「打开一条已有会话」的前提
+- [ ] 宿主侧接上：`sessions.create()` + `acp.loadSession()` + `view.js` 的 append（`onUpdate` 已有回调）
+- [ ] 入口：会话行点「在聊天框继续」→ 建视图 + load + 开始 append
 - [ ] 用 `subprocess` 起进程（**先核实 `SubprocessHandle` 的形状再替换 `node:child_process`**，
       现在 `spawnChild` 是注入的，所以替换是一行）
 - [ ] `session/request_permission` 接到 DSH 的 `approval.request`

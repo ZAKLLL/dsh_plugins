@@ -18,6 +18,46 @@
 
 > 矢量图在 [`docs/architecture.svg`](docs/architecture.svg)，可缩放、可直接改。图里刻意画出来的三件事：**唯一一条路由**、**store 缝隙**（换机器不需要动 adapter）、**契约在加载时校验**。
 
+## ACP：DSH 的聊天框是一条**视图**
+
+**这一节是整件事的定盘星。** 会话的记录**在原始 agent 那里**——它持有历史、写自己的存储。DSH 的 `session` 只是**投影**：聊天框渲染它，它可以被丢掉再重建（`session/load` 让 agent 把历史吐回来）。
+
+这样分之后：
+
+- **没有「两份记录」问题**——DSH 从未主张自己是记录，所以不需要在两者之间取舍
+- **`ctx.sessions` 是内存存储**（官方注释：*a session published outside [the agent lifecycle] persists nothing*）**从缺陷变成设计**：视图本来就该是可丢的
+- **「谁拥有会话」这个问题消失了**，不是被回答了
+
+```
+原始 agent（claude / codex / gemini / pi / opencode）   ← 会话在这里
+        ↑ ACP
+DSH 的 session 日志                                     ← 视图缓存，可丢
+DSH 的聊天框                                            ← GUI
+```
+
+**分工因此自然定了**：`session-hub` 的清单是**持久的索引**（读存储，死会话也在）；DSH 的聊天框是**活的视图**（走 ACP，重启就没了，但能重建）。重启后 DSH 侧边栏里那条会话消失是正常的——**它还在你的面板里**。
+
+### 两个模块，两个职责
+
+| 模块 | 做什么 | 怎么测 |
+| --- | --- | --- |
+| `acp.js` | 协议本身：起进程、JSON-RPC、v1 方法名与请求体 | 假 ACP server（`test/fake-acp.mjs`），17 条 |
+| `view.js` | **把 `session/update` 折成 DSH 会话事件** | 记录器 session（鸭子类型的 `append`），39 条 |
+
+`view.js` **是纯的、不 import DSH**：宿主传真的 `Session`，测试传记录器。所以「映射」这一层——真正可能出错的那层——**不需要 DSH 在跑就能测**。
+
+**必须做对的三件事**（都有断言）：
+
+- **多个 chunk → 一条消息**。每个 chunk 一条消息会把对话塞满碎片。
+- **`surfaceOp: "append"`**。少了它事件在日志里、**在对话里看不见**。
+- **每条消息都有 `id` / `content` / `source`**——DSH 的 `MessageBase` 要求，而且**不会替外部生产者生成**。
+
+字段形状取自 `.ref/` 里提取的 DSH 生成类型（不是猜的）：`MessageBase { id, content, source }`、`TextBlock { type:'text', text }`、`ToolResultMessage { role:'tool', source:{kind:'tool',callId}, toolCallId, isError? }`。
+
+> 一个容易踩的差异：**两种事件的形状不同**——`user/message` 的事件数据**本身就是消息**，而 `assistant/message` 是 `{ turn, step, message, stream }`，消息**嵌在 `message` 里**。我第一版测试就是按同一种形状写的，被测试自己抓出来了。
+
+**未知的 update 类型被忽略而不是抛错**：协议会增长，一条新通知不该把聊天框带走。
+
 ## 第三种传输：ACP（进行中）
 
 前两种传输是**读它的存储**（`store.js`）和**交给它自己的工具打开**（`openPlan`）。第三种是**自己去驱动它**——ACP，Agent Client Protocol。`acp.js` 是这一层的内核。
