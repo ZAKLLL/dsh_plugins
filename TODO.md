@@ -112,6 +112,37 @@ spool 时走它；而 `hook.mjs` 当时**只认 `DSH_HOME`**——于是把插�
 - [ ] 顺带确认：环境状态是否在**激活时**被读一次并缓存——若是，测试必须在 import 之前
       设好 `DSH_SESSION_HUB_HOME`（`preview.mjs` 目前是 import 之后才设）
 
+## 4d. ACP：把自己从「观察者」变成「运行时」（**内核已完成**）
+
+`acp.js` 已落地：JSON-RPC over stdio、v1 方法名与请求体**逐条取自官方 meta.json /
+schema.json**、流式 `session/update`、`session/request_permission` 走注入的应答者、
+不认识的请求回错误（否则 agent 永远等）、进程死亡让在飞请求 reject。
+
+测试用**假 ACP server**（`test/fake-acp.mjs`），不联网也不起真 agent，17 条断言。
+
+**已核实的生态事实（别重复调研）**：
+
+- 官方注册表 41 个 agent，本插件的五家全有官方分发（claude-acp / codex-acp / gemini --acp / pi-acp / opencode）
+- **不需要给任何 agent 装插件**：`distribution` 只有「怎么运行」，没有「装进谁」
+- `loadSession` 在能力矩阵 35 行里**全有**；真正的坎是**认证**（23/35 需要，三种机制）
+- **说 v1**：v2 把 `session/load` 换成了 `session/resume`、`authenticate` 换成 `auth/login`，
+  而今天的适配器讲 v1
+
+**下一步（按依赖顺序）**：
+
+- [ ] **先定「谁拥有会话」**——DSH 拥有、原生 store 当镜像？还是两份并存？**这个决定约束后面每一步**
+- [ ] 宿主侧接上：`session` 缝隙（`start` / `load` / `prompt` / `follow` / `interrupt`），复用 `store.js` 的位置
+- [ ] 用 `subprocess` 起进程（**先核实 `SubprocessHandle` 的形状再替换 `node:child_process`**，
+      现在 `spawnChild` 是注入的，所以替换是一行）
+- [ ] `session/request_permission` 接到 DSH 的 `approval.request`
+- [ ] 注册成 DSH 的 agent（`agents.setFactory` / `subagents.registerProvider`）——**这一步才真正复用聊天框**
+- [ ] 认证三种机制
+- [ ] 能力来自注册表（运行时拉 JSON），**不硬编码 agent 清单**
+- [ ] `acp-tck` 做一致性
+
+**未核实的两处**（写代码前先查）：`ContentBlock` 的确切形状（我按 `{type:"text",text}` 发的，
+假服务器认可，但没对过真 agent）；`SubprocessHandle` 的 stdin/stdout 形状。
+
 ## 4c. op 分发的去分支化（**进行中：3/17**）
 
 `sources/` 那套（契约 + 每块一个文件 + 加载时校验）正在用到 op 上。已完成：契约

@@ -18,6 +18,58 @@
 
 > 矢量图在 [`docs/architecture.svg`](docs/architecture.svg)，可缩放、可直接改。图里刻意画出来的三件事：**唯一一条路由**、**store 缝隙**（换机器不需要动 adapter）、**契约在加载时校验**。
 
+## 第三种传输：ACP（进行中）
+
+前两种传输是**读它的存储**（`store.js`）和**交给它自己的工具打开**（`openPlan`）。第三种是**自己去驱动它**——ACP，Agent Client Protocol。`acp.js` 是这一层的内核。
+
+### 生态已经就绪：不需要给任何 agent 装插件
+
+官方注册表里有 **41 个 agent**，本插件管的五家**全都在**，而且都有官方分发：
+
+| agent | 怎么起 |
+| --- | --- |
+| `claude-acp` | `npx @agentclientprotocol/claude-agent-acp` |
+| `codex-acp` | `npx @agentclientprotocol/codex-acp` |
+| `gemini` | `npx @google/gemini-cli --acp`（**它自己的 CLI 加参数**） |
+| `pi-acp` | `npx pi-acp` |
+| `opencode` | binary（它自己的 release） |
+
+注册表条目只有「怎么运行」（`distribution`），**没有「往 agent 内安装」这一项**——`claude-acp` 的描述就是 *ACP wrapper for Anthropic's Claude*，作者是 Anthropic + Zed + JetBrains。所以平台侧接入即可：
+
+- `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` —— 机器可读的清单与安装方式
+- `.protocol-matrix/latest.json` —— 每个 agent 实测的能力（`loadSession` / `session/list` / `session/fork` / `session/resume`）
+
+> **`loadSession` 在全表 35 行里都有**，所以「在你这边继续一条已有会话」是一等公民而不是边角能力。真正的第一道坎是**认证**：35 个里 23 个在 `session/new` 时返回 `auth_required`，方式分 `terminal` / `agent` / `env_var` 三种。
+
+### 说 v1，不说 v2
+
+官方 `schema/v1/meta.json` 与 `schema/v2/meta.json` 是**方法名映射表**，而两个版本有实质差异：
+
+| | v1 | v2 |
+| --- | --- | --- |
+| 继续已有会话 | `session/load` | **`session/resume`**（没有 `load`） |
+| 登录 | `authenticate` | `auth/login` |
+
+**选 v1**，因为已发布的适配器今天就是说 v1（能力矩阵报的是 `loadSession` 这个名字）。
+
+`acp.js` 里的方法名与请求体**逐条来自** `meta.json` 与 `schema.json`，不是凭记忆写的：
+
+```
+InitializeRequest    protocolVersion* · clientCapabilities · clientInfo
+NewSessionRequest    cwd* · mcpServers*
+LoadSessionRequest   sessionId* · cwd* · mcpServers*
+PromptRequest        sessionId* · prompt*
+SessionNotification  sessionId* · update*
+```
+
+### 内核里刻意的两个决定
+
+**① 没有应答者的权限请求 → `cancelled`，绝不默认放行。** 这是全文件唯一的安全断言：默认 `allow` 会把 agent 与这台机器之间**唯一站着的东西**拿掉。
+
+**② 不认识的 agent→client 请求必须**回一个错误。JSON-RPC 请求没有回复，agent 会**永远等下去**，而人看到的是「卡住了」。
+
+`spawnChild` 与 `askPermission` 都是**注入的**，不 import 全局：宿主拥有「起进程」（`subprocess`）与「问人」（`approval`），而测试可以给假的——**不联网、不起真 agent**（`test/fake-acp.mjs` + `test/acp.mjs`，17 条断言）。
+
 ## 架构：op 也是一个契约
 
 宿主的第一步去分支化把**方言**搬进了 `sources/`；同一件事正在**操作**上做第二遍：
@@ -938,6 +990,7 @@ dsh-session-hub/
 ├── cordis.patch.yml    # 插入 session-hub 这一行；机器清单就在这里的 config.environments（见上）
 ├── ops/                # 操作契约与已搬出的 op（见上）
 ├── index.js            # 宿主半边：四个扫描器 + 统一模型 + 实时状态 + 预览 + transcript + 删除 + 置顶 + 配置 + 环境切换 + /api 路由
+├── acp.js              # 第三种传输：ACP 客户端内核（见上）
 ├── store.js            # 会话存储的字节从哪来：localStore（本机 fs）/ createRemoteStore（每操作或每批一次 ssh）
 ├── host.js             # 一台机器能做什么：exec / invocation / processes / cwdOf（本机与远端两个实现）
 ├── ssh.js              # ssh 调用怎么拼：shq() 引号、Buffer 不解码、bracketed() 探针哨兵

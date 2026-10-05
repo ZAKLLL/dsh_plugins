@@ -156,7 +156,12 @@ function codeOnly(source) {
 
 /** Every module the Host half is made of. */
 async function hostModules() {
-  const files = ["index.js", "shared.js", "store.js", "host.js", "ssh.js", "environments.js", "hook.mjs"];
+  // Every top-level module, discovered rather than listed: a hand-kept list is
+  // how a new module quietly stops being checked — which happened twice already
+  // (ops/ was not scanned, and acp.js would not have been either).
+  const files = (await readdir(root))
+    .filter((name) => name.endsWith(".js") && name !== "client.js")
+    .sort();
   // Every directory of modules the Host loads: a new one that is not listed here
   // would silently stop being checked, which is exactly what happened when ops/
   // was introduced.
@@ -205,7 +210,10 @@ function declarationsOf(code) {
   }
   for (const match of code.matchAll(/(?:const|let|var)\s*\{([^}]*)\}\s*=/g)) {
     for (const part of match[1].split(",")) {
-      const name = part.trim().split(/[\s:]/).pop().trim();
+      // `{ spawnChild = defaultSpawn }` is a declaration of `spawnChild`. Taking
+      // the last token read the *default* as the name, so the real one looked
+      // like a call to something nothing provides.
+      const name = part.split("=")[0].trim().split(/[\s:]/).pop().trim();
       if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
     }
   }
